@@ -5,6 +5,12 @@ output: pdf_document
 
 
 ```{r echo=FALSE, message = FALSE, include = FALSE}
+##analisis_SOTA_levadura.rmd
+##2016-11-23 julenmendieta92@gmail.com
+##1-Abrir matriz de datos de expresion genica, imputar datos faltantes y convertir a ranking
+##2-Realizar clustering mediante algoritmo SOTA, y buscar terminos GO asociados a cada cluster
+##2-Comprobar robustez del clustering con silhouette
+
 library("impute")
 setwd("/media/julen/TOSHIBA_EXT/datos/paper/levadura")
 
@@ -69,7 +75,7 @@ library("GOSemSim")
 library("tidyr")
 ## Funciones
 # Funcion para generar el plot
-plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE) {
+plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE, valor_silueta) {
   eje = 2
   for(i in 1: nrow(DatosFilt)) {
     if(i == 1) {
@@ -87,7 +93,7 @@ plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE
   plot(apply(DatosFilt, 2, mean), type ="l", ylim = range(c( ran1 ,ran2)), xaxt = "n", 
        xlab ="Variables", ylab ="PromedioCluster", 
        main = paste("Cluster", "_", clu_comp, ".", as.character(clu), "_", nrow(DatosFilt), "_genes", sep =""),
-       cex.axis = eje)
+       cex.axis = eje, sub=valor_silueta)
   lines(y = apply(DatosFilt[,1:3], 2, mean), x = c(1,2,3), col="blue", lwd=2)
   lines(y = apply(DatosFilt[,3:6], 2, mean), x = c(3,4,5,6), col="red", lwd=2)
 
@@ -135,17 +141,20 @@ SOTA <- function(Matriz_6, ciclos, escala) {
   return(salida)
 }
 # Funcion para realizar todo el analisis con sota y generar plots de clusters no demasiado grandes
-global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c()) {
+global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c(), record_silueta = "Silueta") {
   if(clu_comp != "") {
-    dir.create(file.path(paste("salida", fin, sep="")), showWarnings = FALSE)
-    salida = paste("salida", fin, "/", clu_comp, sep = "")
-    saveRDS(s.sota, salida)
+    # Si en algun momento hay que acelerar el proceso esto hay q moverlo
+    # dir.create(file.path(paste("salida", fin, sep="")), showWarnings = FALSE)
+    #
+    # salida = paste("salida", fin, "/", clu_comp, sep = "")
+    # saveRDS(s.sota, salida)
   }
   for(clu in clusters_test) {
     if (!(clu %in% reanalizar)) {
       pos = s.sota$clust == clu
       DatosFilt = Matriz_6[pos,]
-      plotear(DatosFilt, clu, clu_comp)
+      valor_silueta = record_silueta[as.numeric(clu)]
+      plotear(DatosFilt, clu, clu_comp, go=TRUE, valor_silueta=valor_silueta)
       nodos = append(nodos, paste(as.character(clu_comp), ".", as.character(clu), sep = ""))
     }
     ## Vamos a dividir los clusters mas grandes
@@ -167,6 +176,17 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
       # a el total de genes analizados dividido por las 25 divisiones
       ciclos = round(nrow(Matriz_filtr)/escala, digits = 0)
       lista_sota = SOTA(Matriz_filtr, ciclos, escala)
+      
+      # Analizamos la robustez de los clustes generados con silhouette
+      distance = dist(Matriz_filtr, method = "euclidean")
+      clusters_int = as.integer(lista_sota[["sota"]]$clust)
+      names(clusters_int) = rownames(Matriz_filtr)
+      silueta = silhouette(x=clusters_int, dist=distance)
+      resumen = summary(silueta)
+      silueta_clust = resumen$clus.avg.widths
+      # Les ponemos a los valores de disimilitud media el valor del cluster del que provienen como prefijo
+      record_silueta1 = paste(record_silueta, round(silueta_clust, 2), sep = "_")
+      
       # Con esto se hace el seguimiento del origen de cada cluster
       if (clu_comp != "") {
         clu_comp2 = paste(as.character(clu_comp), ".", clu, sep = "")
@@ -175,7 +195,7 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
         clu_comp2 = 0
       }
       nodos = global_SOTA(Matriz_filtr, lista_sota[["clusters_test"]], lista_sota[["reanalizar"]], lista_sota[["sota"]], 
-                          escala = escala, clu_comp = clu_comp2, fin=fin, nodos=nodos)
+                          escala = escala, clu_comp = clu_comp2, fin=fin, nodos=nodos, record_silueta = record_silueta1)
     }
   }
   return(nodos)
@@ -369,8 +389,7 @@ generarArbol <- function(barbol) {
   return(salida)
 }
 
-# Funcion para reducir el numero de GOs que aparecen
-# Funcion para eliinar GO solapantes
+# Funcion para eliminar GO solapantes por similitud lexica (0.7)
 simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "yeast") {
       ## to satisfy codetools for calling gather
       # Con esto indicamos la similitud entre cada GO
