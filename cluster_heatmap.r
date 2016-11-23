@@ -124,10 +124,6 @@ if (sum(indx) > 0) {
 Matriz_6 = as.matrix(Matriz_6)
 
 # Generamos ranking
-for (col in 1:ncol(Matriz_6)) {
-  Matriz_6[,col] = scale(Matriz_6[,col], center = TRUE, scale = TRUE)
-}
-
 for(col in 1:ncol(Matriz_6)) {
   Matriz_6[, col] = rank(Matriz_6[, col], na.last = "keep")
 }
