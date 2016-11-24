@@ -122,7 +122,7 @@ plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE
 }
 
 # Funcion para lanzar el sota con una matriz de genes y devolver parametros de interes
-SOTA <- function(Matriz_6, ciclos, escala) {
+SOTA <- function(Matriz_6, ciclos, escala, recursivo) {
   # He visto que se puede dar un error al hacer el sota, que se arregla al modificar los ciclos
   s.sota=0
   suppressWarnings((s.sota = sota(Matriz_6, maxCycles = ciclos, maxEpochs = 1000, distance = "euclidean", wcell = 0.01, 
@@ -134,20 +134,27 @@ SOTA <- function(Matriz_6, ciclos, escala) {
                 maxDiversity = 0.9, unrest.growth = TRUE)
   }
   s.sota$total
-  reanalizar = names(table(s.sota$clust)[!table(s.sota$clust) < escala])
-  # Solo nos quedamos con los clusters que tienen mas de 9 genes
-  clusters_test = names(table(s.sota$clust)[!table(s.sota$clust) <= 10])
+  # Si no planteamos un analisis recursivo no guardamos nada en reanalizar
+  if (recursivo == FALSE) {
+      reanalizar = c()
+      clusters_test = names(table(s.sota$clust))
+  } else {
+      reanalizar = names(table(s.sota$clust)[!table(s.sota$clust) < escala])
+      # Solo nos quedamos con los clusters que tienen mas de 9 genes
+      clusters_test = names(table(s.sota$clust)[!table(s.sota$clust) <= 10])
+  }
+ 
   salida <- list("clusters_test" = clusters_test, "reanalizar" = reanalizar, "sota" = s.sota)
   return(salida)
 }
 # Funcion para realizar todo el analisis con sota y generar plots de clusters no demasiado grandes
-global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c(), record_silueta = "Silueta") {
+global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c(), record_silueta = "Silueta", recursivo=TRUE) {
   if(clu_comp != "") {
     # Si en algun momento hay que acelerar el proceso esto hay q moverlo
-    # dir.create(file.path(paste("salida", fin, sep="")), showWarnings = FALSE)
+    dir.create(file.path(paste("salida", fin, sep="")), showWarnings = FALSE)
     #
-    # salida = paste("salida", fin, "/", clu_comp, sep = "")
-    # saveRDS(s.sota, salida)
+    salida = paste("salida", fin, "/", clu_comp, sep = "")
+    saveRDS(s.sota, salida)
   }
   for(clu in clusters_test) {
     if (!(clu %in% reanalizar)) {
@@ -175,7 +182,7 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
       # Si vamos a mantener una proporcionalidad, no podremos dividir por mas clusters cuando el numero de genes sea inferior
       # a el total de genes analizados dividido por las 25 divisiones
       ciclos = round(nrow(Matriz_filtr)/escala, digits = 0)
-      lista_sota = SOTA(Matriz_filtr, ciclos, escala)
+      lista_sota = SOTA(Matriz_filtr, ciclos, escala, recursivo=recursivo)
       
       # Analizamos la robustez de los clustes generados con silhouette
       distance = dist(Matriz_filtr, method = "euclidean")
@@ -195,7 +202,8 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
         clu_comp2 = 0
       }
       nodos = global_SOTA(Matriz_filtr, lista_sota[["clusters_test"]], lista_sota[["reanalizar"]], lista_sota[["sota"]], 
-                          escala = escala, clu_comp = clu_comp2, fin=fin, nodos=nodos, record_silueta = record_silueta1)
+                          escala = escala, clu_comp = clu_comp2, fin=fin, nodos=nodos, record_silueta = record_silueta1,
+                          recursivo=recursivo)
     }
   }
   return(nodos)
@@ -453,9 +461,9 @@ boxplot(Matriz_6)
 summary(Matriz_6)
 
 # Vamos a analizar los grupos con mas de 10 genes --> n = 10
-escala = nrow(Matriz_6) / 18
+escala = nrow(Matriz_6) / 20
 
-arbol = global_SOTA(Matriz_6, escala = escala, fin=fin)
+arbol = global_SOTA(Matriz_6, escala = escala, fin=fin, recursivo=FALSE)
 ```
 
 # Arbol de los clusters generados con mas de 10 genes
