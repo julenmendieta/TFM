@@ -6,7 +6,8 @@
 
 dir = "/media/julen/TOSHIBA_EXT/datos/paper/levadura"
 setwd(dir)
-matriz = readRDS(file="datos_cargar/matriz_lev.rds")
+
+matriz = readRDS(file=paste(dir,"/datos_cargar/matriz_lev.rds", sep=""))
 fin="_levadura"
 
 ##################### FUNCIONES ##################################
@@ -47,7 +48,7 @@ buscarSilhouette <- function(heat1, dir, distan, distance) {
   silueta = silhouette(x=clusters, dist=distance)
   resumen = summary(silueta)
   resumen = resumen$clus.avg.widths
-  # Guardamos solo los clusters con disimilaridad media superior a 0.5
+  # Guardamos solo los clusters con disimilitud media superior a 0.5
   resumen = resumen[resumen > 0.5]
   clusters_top = data.frame()
   for (clu1 in names(resumen)) {
