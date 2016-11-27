@@ -12,7 +12,8 @@ output: pdf_document
 ##2-Comprobar robustez del clustering con silhouette
 
 library("impute")
-setwd("/media/julen/TOSHIBA_EXT/datos/paper/levadura")
+dir = "/media/julen/TOSHIBA_EXT/datos/paper/levadura"
+setwd(dir)
 
 matriz = readRDS(file="datos_cargar/matriz_lev.rds")
 fin="_levadura"
@@ -151,9 +152,9 @@ SOTA <- function(Matriz_6, ciclos, escala, recursivo) {
 global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c(), record_silueta = "Silueta", recursivo=TRUE) {
   if(clu_comp != "") {
     # Si en algun momento hay que acelerar el proceso esto hay q moverlo
-    dir.create(file.path(paste("salida", fin, sep="")), showWarnings = FALSE)
+    dir.create(file.path(paste(dir, "/salida", fin, sep="")), showWarnings = FALSE)
     #
-    salida = paste("salida", fin, "/", clu_comp, sep = "")
+    salida = paste(dir, "/salida", fin, "/", clu_comp, sep = "")
     saveRDS(s.sota, salida)
   }
   for(clu in clusters_test) {
@@ -452,9 +453,18 @@ simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="R
 ```{r echo=FALSE}
 ## Programa
 options(width = 100)
-# Correlacion
+# Correlaciones
+pear = round(cor(matriz, use="pairwise.complete.obs", method = "pearson"), 3)
 spear = round(cor(matriz, use="pairwise.complete.obs", method = "spearman"), 3)
-print("Correlacion de Spearman:")
+
+# Juntamos las matrices de correlacion
+
+for (c in 1:(ncol(matriz) - 1)) {
+  for (c2 in (c + 1):ncol(matriz)) {
+    spear[c, c2] = pear[c, c2]
+  }
+}
+print("Correlacion de Pearson (arriba) VS Spearman (abajo)")
 print(spear)
 
 boxplot(Matriz_6)
@@ -462,8 +472,10 @@ summary(Matriz_6)
 
 # Vamos a analizar los grupos con mas de 10 genes --> n = 10
 escala = nrow(Matriz_6) / 20
+# Si queremos que el arbol sea recursivo, reursivo=TRUE
+recursivo=FALSE
 
-arbol = global_SOTA(Matriz_6, escala = escala, fin=fin, recursivo=FALSE)
+arbol = global_SOTA(Matriz_6, escala = escala, fin=fin, recursivo=recursivo)
 ```
 
 # Arbol de los clusters generados con mas de 10 genes
@@ -473,9 +485,14 @@ arbol = global_SOTA(Matriz_6, escala = escala, fin=fin, recursivo=FALSE)
 arbol1 = generarArbol(arbol)
 arbol1 = read.newick(text = arbol1)
 plotTree(arbol1)
-arbol1$node.label[arbol1$node.label == ""] = "INICIO"
-nodelabels(arbol1$node.label,cex=0.9,bg="white",srt=-90)
+# A partir de aqui dara error si el algoritmo no era recursivo, ya que no habra nodos
+if (recursivo == TRUE) {
+  arbol1$node.label[arbol1$node.label == ""] = "INICIO"
+  nodelabels(arbol1$node.label,cex=0.9,bg="white",srt=-90)
+}
+
 ```
+
 
 # Revision de clusters y modificaciones
 
