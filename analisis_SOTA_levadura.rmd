@@ -74,7 +74,116 @@ library("org.Sc.sgd.db")
 library("clusterProfiler")
 library("GOSemSim")
 library("tidyr")
-## Funciones
+################################################# Funciones  ##########################################################
+
+# Funcion para eliminar GO solapantes por similitud lexica (0.7)
+simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "yeast") {
+      ## to satisfy codetools for calling gather
+      # Con esto indicamos la similitud entre cada GO
+      go1 <- go2 <- similarity <- NULL
+      
+      ID = paste("GO", ont, "ID", sep="")
+      rownames(x) = x[,ID]
+      
+      
+      sim <- mgoSim(x[,ID], x[,ID],
+                    ont=ont,
+                    organism=organismo,
+                    measure=measure,
+                    combine=NULL)
+      
+      sim.df <- as.data.frame(sim)
+      sim.df$go1 <- row.names(sim.df)
+      sim.df <- gather(sim.df, go2, similarity, -go1)
+      
+      sim.df <- sim.df[!is.na(sim.df$similarity),]
+      
+      ## feature 'by' is attached to 'go1'
+      sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
+      sim.df$go2 <- as.character(sim.df$go2)
+      
+      ID2 <- x[,ID]
+      
+      GO_to_remove <- character()
+      for (i in seq_along(ID2)) {
+          ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
+          ## if length(ii) == 1, then go1 == go2
+          if (length(ii) < 2) 
+              next
+          
+          sim_subset <- sim.df[ii,]
+          
+          jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
+          
+          ## sim.df <- sim.df[-ii[-jj]]
+          GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
+      }
+      x <- x[!(x[,ID] %in% GO_to_remove),]
+      return(x)
+  }
+
+
+# Enriquecimineto GO
+enriquecimientoGO <- function(listaGenes) {
+  ontologies = c("BP", "CC")
+  orfId <- org.Sc.sgdGO
+  universe <- mappedkeys(orfId)
+  catego1 <- as.character(listaGenes)
+  salida = list()
+  for(ont in ontologies) {
+    # Podriamos cambiar universeGeneIds por una lista de identificadores de entrez, pero dejandolo asi
+    # es mas facil ver cuando hay genes que no tienen ningun termino GO asociado
+    params <- new("GOHyperGParams" , geneIds = catego1,
+                universeGeneIds = universe , ontology = ont , pvalueCutoff =0.001,
+                conditional =F , testDirection = "over" , annotation ="org.Sc.sgd")
+    hgOver <- hyperGTest(params)
+    
+    
+    ## Ajustamos el p-valor con FDR
+    # Get the p-values of the test
+    hgOver.pv <- pvalues(hgOver)
+    # Adjust p-values for multiple test (FDR)
+    hgOver.pv.fdr <- p.adjust(hgOver.pv,'fdr')
+    # Guardamos los valores del FDR en el objeto de resultados
+    # Si ninguno tiene p-valor inferior a 0.001 sale error, asi que lo suprimimos
+    if (sum(hgOver.pv < 0.001) == 0) {
+      suppressWarnings(result <- summary(hgOver))
+    } else {
+      result <- summary(hgOver)
+    }
+
+    # Si no hay resultados, esta parte sobra
+    if(dim(result)[1] != 0) {
+      longi = dim(result)[1]
+      FDR = hgOver.pv.fdr[1 : longi]
+      names(FDR) = NULL
+      result["FDR"] <- FDR
+      if(ont == "BP") {
+        resultsalida <- result[, c("Term", "FDR", "GOBPID")]
+      } else {
+        resultsalida <- result[, c("Term", "FDR", "GOCCID")]
+      }
+      # select the GO terms with adjusted p-value less than the cut off
+      
+      resultsalida = simplificar(resultsalida, ont, cutoff=0.7, by="FDR", 
+                                 select_fun=min, measure="Rel", organismo = "yeast")
+      
+
+      resultsalida <- resultsalida[resultsalida[, "FDR"] < 0.001, ]
+      if (nrow(resultsalida) == 0) {
+        salida[[ont]] = "No summarized results with FDR < 0.001"
+      } else {
+        salida[[ont]] = resultsalida
+      }
+    } else {
+      salida[[ont]] = "There weren't adjusted p values < 0.001 before GO summary"
+    }
+  }
+  
+  return(salida)
+}
+
+
 # Funcion para generar el plot
 plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE, valor_silueta) {
   eje = 2
@@ -122,6 +231,7 @@ plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE
   }
 }
 
+
 # Funcion para lanzar el sota con una matriz de genes y devolver parametros de interes
 SOTA <- function(Matriz_6, ciclos, escala, recursivo) {
   # He visto que se puede dar un error al hacer el sota, que se arregla al modificar los ciclos
@@ -148,8 +258,10 @@ SOTA <- function(Matriz_6, ciclos, escala, recursivo) {
   salida <- list("clusters_test" = clusters_test, "reanalizar" = reanalizar, "sota" = s.sota)
   return(salida)
 }
+
+
 # Funcion para realizar todo el analisis con sota y generar plots de clusters no demasiado grandes
-global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c(), record_silueta = "Silueta", recursivo=TRUE) {
+global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c(), record_silueta = "Silueta", recursivo=TRUE, go=TRUE) {
   if(clu_comp != "") {
     # Si en algun momento hay que acelerar el proceso esto hay q moverlo
     dir.create(file.path(paste(dir, "/salida", fin, sep="")), showWarnings = FALSE)
@@ -162,7 +274,7 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
       pos = s.sota$clust == clu
       DatosFilt = Matriz_6[pos,]
       valor_silueta = record_silueta[as.numeric(clu)]
-      plotear(DatosFilt, clu, clu_comp, go=TRUE, valor_silueta=valor_silueta)
+      plotear(DatosFilt, clu, clu_comp, go=go, valor_silueta=valor_silueta)
       nodos = append(nodos, paste(as.character(clu_comp), ".", as.character(clu), sep = ""))
     }
     ## Vamos a dividir los clusters mas grandes
@@ -204,7 +316,7 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
       }
       nodos = global_SOTA(Matriz_filtr, lista_sota[["clusters_test"]], lista_sota[["reanalizar"]], lista_sota[["sota"]], 
                           escala = escala, clu_comp = clu_comp2, fin=fin, nodos=nodos, record_silueta = record_silueta1,
-                          recursivo=recursivo)
+                          recursivo=recursivo, go=go)
     }
   }
   return(nodos)
@@ -225,73 +337,6 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
 # s.sota = lista_sota[["sota"]]
 # clu_comp = clu_comp2
 
-
-
-# Enriquecimineto GO
-enriquecimientoGO <- function(listaGenes) {
-  ontologies = c("BP", "CC")
-  orfId <- org.Sc.sgdGO
-  universe <- mappedkeys(orfId)
-  catego1 <- as.character(listaGenes)
-  salida = list()
-  for(ont in ontologies) {
-    params <- new("GOHyperGParams" , geneIds = catego1,
-                universeGeneIds = universe , ontology = ont , pvalueCutoff =0.001,
-                conditional =F , testDirection = "over" , annotation ="org.Sc.sgd")
-    hgOver <- hyperGTest(params)
-    
-    
-    ## Ajustamos el p-valor con FDR
-    # Get the p-values of the test
-    hgOver.pv <- pvalues(hgOver)
-    # Adjust p-values for multiple test (FDR)
-    hgOver.pv.fdr <- p.adjust(hgOver.pv,'fdr')
-    # Guardamos los valores del FDR en el objeto de resultados
-    result <- summary(hgOver)
-    # Si no hay resultados, esta parte sobra
-    if(dim(result)[1] != 0) {
-      longi = dim(result)[1]
-      FDR = hgOver.pv.fdr[1 : longi]
-      names(FDR) = NULL
-      result["FDR"] <- FDR
-      if(ont == "BP") {
-        resultsalida <- result[, c("Term", "FDR", "GOBPID")]
-      } else {
-        resultsalida <- result[, c("Term", "FDR", "GOCCID")]
-      }
-      # select the GO terms with adjusted p-value less than the cut off
-      
-      resultsalida = simplificar(resultsalida, ont, cutoff=0.7, by="FDR", 
-                                 select_fun=min, measure="Rel", organismo = "yeast")
-      
-
-      resultsalida <- resultsalida[resultsalida[, "FDR"] < 0.001, ]
-      if (nrow(resultsalida) == 0) {
-        salida[[ont]] = "No summarized results with FDR < 0.001"
-      } else {
-        salida[[ont]] = resultsalida
-      }
-    } else {
-      salida[[ont]] = "There weren't adjusted p values < 0.001 before GO summary"
-    }
-  }
-  
-  return(salida)
-}
-
-
-# Funcion para calcular la varianza de las columnas de una matriz
-colVars <- function(x, na.rm=FALSE, dims=1, unbiased=TRUE, SumSquares=FALSE,
-                    twopass=FALSE) {
-      if (SumSquares) return(colSums(x^2, na.rm, dims))
-      N <- colSums(!is.na(x), FALSE, dims)
-      Nm1 <- if (unbiased) N-1 else N
-      if (twopass) {x <- if (dims==length(dim(x))) x - mean(x, na.rm=na.rm) else
-                         sweep(x, (dims+1):length(dim(x)), colMeans(x,na.rm,dims))}
-      (colSums(x^2, na.rm, dims) - colSums(x, na.rm, dims)^2/N) / Nm1
-}
-
-stderr <- function(x) sqrt(var(x,na.rm=TRUE)/length(na.omit(x)))
 
 # Funcion para hacer el arbol con los nodos intermedios
 generarArbol <- function(barbol) {
@@ -398,53 +443,19 @@ generarArbol <- function(barbol) {
   return(salida)
 }
 
-# Funcion para eliminar GO solapantes por similitud lexica (0.7)
-simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "yeast") {
-      ## to satisfy codetools for calling gather
-      # Con esto indicamos la similitud entre cada GO
-      go1 <- go2 <- similarity <- NULL
-      
-      ID = paste("GO", ont, "ID", sep="")
-      rownames(x) = x[,ID]
-      
-      
-      sim <- mgoSim(x[,ID], x[,ID],
-                    ont=ont,
-                    organism=organismo,
-                    measure=measure,
-                    combine=NULL)
-      
-      sim.df <- as.data.frame(sim)
-      sim.df$go1 <- row.names(sim.df)
-      sim.df <- gather(sim.df, go2, similarity, -go1)
-      
-      sim.df <- sim.df[!is.na(sim.df$similarity),]
-      
-      ## feature 'by' is attached to 'go1'
-      sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
-      sim.df$go2 <- as.character(sim.df$go2)
-      
-      ID2 <- x[,ID]
-      
-      GO_to_remove <- character()
-      for (i in seq_along(ID2)) {
-          ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
-          ## if length(ii) == 1, then go1 == go2
-          if (length(ii) < 2) 
-              next
-          
-          sim_subset <- sim.df[ii,]
-          
-          jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
-          
-          ## sim.df <- sim.df[-ii[-jj]]
-          GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
-      }
-      x <- x[!(x[,ID] %in% GO_to_remove),]
-      return(x)
-  }
 
-
+# # Funcion para calcular la varianza de las columnas de una matriz
+# colVars <- function(x, na.rm=FALSE, dims=1, unbiased=TRUE, SumSquares=FALSE,
+#                     twopass=FALSE) {
+#       if (SumSquares) return(colSums(x^2, na.rm, dims))
+#       N <- colSums(!is.na(x), FALSE, dims)
+#       Nm1 <- if (unbiased) N-1 else N
+#       if (twopass) {x <- if (dims==length(dim(x))) x - mean(x, na.rm=na.rm) else
+#                          sweep(x, (dims+1):length(dim(x)), colMeans(x,na.rm,dims))}
+#       (colSums(x^2, na.rm, dims) - colSums(x, na.rm, dims)^2/N) / Nm1
+# }
+# 
+# stderr <- function(x) sqrt(var(x,na.rm=TRUE)/length(na.omit(x)))
 
 ```
 
@@ -470,12 +481,13 @@ print(spear)
 boxplot(Matriz_6)
 summary(Matriz_6)
 
-# Vamos a analizar los grupos con mas de 10 genes --> n = 10
-escala = nrow(Matriz_6) / 20
+escala = nrow(Matriz_6) / 30
 # Si queremos que el arbol sea recursivo, reursivo=TRUE
 recursivo=FALSE
+# Si queremos busqueda de GO
+busqueda_go = FALSE
 
-arbol = global_SOTA(Matriz_6, escala = escala, fin=fin, recursivo=recursivo)
+arbol = global_SOTA(Matriz_6, escala = escala, fin=fin, recursivo=recursivo, go=busqueda_go)
 ```
 
 # Arbol de los clusters generados con mas de 10 genes
