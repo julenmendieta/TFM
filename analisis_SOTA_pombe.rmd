@@ -135,7 +135,7 @@ simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="R
   }
 
 
-# Buscamos enriquecimineto GO
+# Buscamos enriquecimineto GO con Gprofiler
 enriquecimientoGO_Gprofiler <- function(listaGenes, longSinGO="?", filtro="GO", especie="otro") {
     corte = 0.001
     # Buscamos asociacion a terminos GO, y corregimos por FDR
@@ -333,6 +333,7 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
 # nodos=c()
 # record_silueta = "Silueta"
 # go = TRUE
+# clu_comp2 = 0
 # 
 # #En cada iteracion
 # Matriz_6 = Matriz_filtr
