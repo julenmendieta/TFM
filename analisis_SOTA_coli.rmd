@@ -1,22 +1,22 @@
 ---
-title: "SOTA levadura"
+title: "SOTA coli"
 output: pdf_document
 ---
 
 
 ```{r echo=FALSE, message = FALSE, include = FALSE}
-##analisis_SOTA_levadura.rmd
+##analisis_SOTA_coli.rmd
 ##2016-11-23 julenmendieta92@gmail.com
 ##1-Abrir matriz de datos de expresion genica, imputar datos faltantes y convertir a ranking
 ##2-Realizar clustering mediante algoritmo SOTA, y buscar terminos GO asociados a cada cluster
 ##2-Comprobar robustez del clustering con silhouette
 
 library("impute")
-dir = "/media/julen/TOSHIBA_EXT/datos/paper/levadura"
+dir = "/media/julen/TOSHIBA_EXT/datos/paper/coli"
 setwd(dir)
 
-matriz = readRDS(file="datos_cargar/matriz_lev.rds")
-fin="_levadura"
+matriz = readRDS(file="datos_cargar/matriz_coli.rds")
+fin="_coli"
 
 matriz = matriz[,c("TR", "RS", "RA", "TLRi", "PS", "PA")]
 
@@ -70,7 +70,7 @@ library("GO.db")
 library("topGO")
 library("GOstats")
 library("biomaRt")
-library("org.Sc.sgd.db")
+library("org.EcK12.eg.db")
 library("clusterProfiler")
 library("GOSemSim")
 library("tidyr")
@@ -121,23 +121,46 @@ simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="R
 
 
 # Enriquecimineto GO
-enriquecimientoGO <- function(listaGenes, longSinGO="?") {
+enriquecimientoGO <- function(listaGenes) {
+    # Cambiamos los IDs a entrez
+    xx1 <- as.list(org.EcK12.egALIAS2EG)
+    listaGenes1 = xx1[listaGenes]
+    names(listaGenes1) = NULL
+    catego1 = unlist(listaGenes1)
+    catego1 = unique(catego1)
+    
+    # Guardamos una lista con todos los genes que tienen GO asociados
+    orfId <- org.EcK12.egGO
+    conGO <- mappedkeys(orfId)
+    # Guardamos una lista con todos los genes
+    universe <- xx1
+    names(universe) = NULL
+    universe = unlist(universe)
+    universe = unique(universe)
+    
+    # Vamos a indicar cuantos genes no tienen un GO asociado
+    # Primero sacamos los genes de nuestro cluster que no tienen GO (los que tienen GO salen de org.Eck12.egGO)
+    pos = !(catego1 %in% conGO)
+    sinGO = catego1[pos]
+    # Obtenemos una lista con identificadores en Symbol y entrez, y retransformamos a Symbol nuestra lista de genes
+    entrzSymb = as.list(org.EcK12.egSYMBOL)
+    sinGO1 = entrzSymb[sinGO]
+    names(sinGO1) = NULL
+    sinGO1 = unlist(sinGO1)
+    sinGO1 = unique(sinGO1)
+    # Al parecer un gene Symbol puede tener varios ID de entrez y viceversa, por lo que tenemos esto en cuenta
+    sinGO1 = sinGO1[sinGO1 %in% listaGenes]
+    longSinGO = length(sinGO1)
+    
     ontologies = c("BP", "CC")
-    orfId <- org.Sc.sgdGO
-    universe <- mappedkeys(orfId)
-    catego1 <- as.character(listaGenes)
-    
-    # Apuntamos cuantos genes de nuestro cluster no tinene GO asociados
-    pos = !(listaGenes %in% universe)
-    longSinGO = sum(pos)
-    
+    #   orfId <- org.EcK12.egGO
+    #   universe <- mappedkeys(orfId)
+    #   catego1 <- as.character(listaGenes)
     salida = list()
     for(ont in ontologies) {
-        # Podriamos cambiar universeGeneIds por una lista de identificadores de entrez, pero dejandolo asi
-        # es mas facil ver cuando hay genes que no tienen ningun termino GO asociado
         params <- new("GOHyperGParams" , geneIds = catego1,
                     universeGeneIds = universe , ontology = ont , pvalueCutoff =0.001,
-                    conditional =F , testDirection = "over" , annotation ="org.Sc.sgd")
+                    conditional =F , testDirection = "over" , annotation ="org.EcK12.eg")
         hgOver <- hyperGTest(params)
         
         
@@ -153,7 +176,7 @@ enriquecimientoGO <- function(listaGenes, longSinGO="?") {
         } else {
             result <- summary(hgOver)
         }
-    
+        
         # Si no hay resultados, esta parte sobra
         if(dim(result)[1] != 0) {
             longi = dim(result)[1]
@@ -166,10 +189,10 @@ enriquecimientoGO <- function(listaGenes, longSinGO="?") {
                 resultsalida <- result[, c("Term", "FDR", "GOCCID")]
             }
             # select the GO terms with adjusted p-value less than the cut off
-            
+          
             resultsalida = simplificar(resultsalida, ont, cutoff=0.7, by="FDR", 
-                                 select_fun=min, measure="Rel", organismo = "yeast")
-              
+                                     select_fun=min, measure="Rel", organismo = "human")
+          
         
             resultsalida <- resultsalida[resultsalida[, "FDR"] < 0.001, ]
             if (nrow(resultsalida) == 0) {
@@ -177,9 +200,9 @@ enriquecimientoGO <- function(listaGenes, longSinGO="?") {
             } else {
                 salida[[ont]] = resultsalida
             }
-        } else {
+            } else {
             salida[[ont]] = "There weren't adjusted p values < 0.001 before GO summary"
-        }
+            }
     }
     salida[["noGO"]] = longSinGO
     return(salida)
@@ -333,11 +356,14 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
 
 # # PAra pruebas
 # # Al llamar global_SOTA
+# Matriz_filtr = Matriz_6
 # clusters_test = "inicio"
 # reanalizar = "inicio"
 # s.sota = 0
 # clu_comp = ""
 # nodos=c()
+# record_silueta = "Silueta"
+# go = TRUE
 # 
 # #En cada iteracion
 # Matriz_6 = Matriz_filtr
@@ -462,7 +488,6 @@ generarArbol <- function(barbol) {
 # }
 # 
 # stderr <- function(x) sqrt(var(x,na.rm=TRUE)/length(na.omit(x)))
-
 ```
 
 # Creacion de clusters mediante SOTA
@@ -510,4 +535,3 @@ if (recursivo == TRUE) {
 }
 
 ```
-

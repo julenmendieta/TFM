@@ -1,22 +1,22 @@
 ---
-title: "SOTA levadura"
+title: "SOTA pombe"
 output: pdf_document
 ---
 
 
 ```{r echo=FALSE, message = FALSE, include = FALSE}
-##analisis_SOTA_levadura.rmd
+##analisis_SOTA_pombe.rmd
 ##2016-11-23 julenmendieta92@gmail.com
 ##1-Abrir matriz de datos de expresion genica, imputar datos faltantes y convertir a ranking
 ##2-Realizar clustering mediante algoritmo SOTA, y buscar terminos GO asociados a cada cluster
 ##2-Comprobar robustez del clustering con silhouette
 
 library("impute")
-dir = "/media/julen/TOSHIBA_EXT/datos/paper/levadura"
+dir = "/media/julen/TOSHIBA_EXT/datos/paper/pombe"
 setwd(dir)
 
-matriz = readRDS(file="datos_cargar/matriz_lev.rds")
-fin="_levadura"
+matriz = readRDS(file="datos_cargar/matriz_pombe.rds")
+fin="_pombe"
 
 matriz = matriz[,c("TR", "RS", "RA", "TLRi", "PS", "PA")]
 
@@ -68,118 +68,110 @@ library("phytools")
 library("clValid")
 library("GO.db")
 library("topGO")
+library("gProfileR")
 library("GOstats")
 library("biomaRt")
-library("org.Sc.sgd.db")
 library("clusterProfiler")
 library("GOSemSim")
 library("tidyr")
+library("GOSim")
 ################################################# Funciones  ##########################################################
 
 # Funcion para eliminar GO solapantes por similitud lexica (0.7)
-simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro") {
-    ## to satisfy codetools for calling gather
-    # Con esto indicamos la similitud entre cada GO
-    go1 <- go2 <- similarity <- NULL
+simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro", ID="") {
+      ## to satisfy codetools for calling gather
+      # Con esto indicamos la similitud entre cada GO
+      go1 <- go2 <- similarity <- NULL
+      if (ID == "") {
+          ID = paste("GO", ont, "ID", sep="")
+      }
+      rownames(x) = x[,ID]
+      
+      # Primero hay que preparar el GO data
+      godata(OrgDb = NULL, keytype = "ENTREZID", ont, computeIC = TRUE)
+      ## JAJA uno a uno
+      d <- semData('MeSH.Spo.972h.eg.db', ont=ont)
+      goSim("heterocycle metabolic process", "heterocycle biosynthetic process", semData, measure = "Wang")
+      
+      # Esto es de otro paquete GOSim
+      a= getTermSim(x[,"term.name"], method = "relevance", verbose = FALSE)
+      
+      
+      
+      sim <- mgoSim(x[,ID], x[,ID],
+                    ont=ont,
+                    organism=organismo,
+                    measure=measure,
+                    combine=NULL)
+      
+      sim.df <- as.data.frame(sim)
+      sim.df$go1 <- row.names(sim.df)
+      sim.df <- gather(sim.df, go2, similarity, -go1)
+      
+      sim.df <- sim.df[!is.na(sim.df$similarity),]
+      
+      ## feature 'by' is attached to 'go1'
+      sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
+      sim.df$go2 <- as.character(sim.df$go2)
+      
+      ID2 <- x[,ID]
+      
+      GO_to_remove <- character()
+      for (i in seq_along(ID2)) {
+          ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
+          ## if length(ii) == 1, then go1 == go2
+          if (length(ii) < 2) 
+              next
+          
+          sim_subset <- sim.df[ii,]
+          
+          jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
+          
+          ## sim.df <- sim.df[-ii[-jj]]
+          GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
+      }
+      x <- x[!(x[,ID] %in% GO_to_remove),]
+      return(x)
+  }
 
-    ID = paste("GO", ont, "ID", sep="")
-    rownames(x) = x[,ID]
 
-
-    sim <- mgoSim(x[,ID], x[,ID],
-            ont=ont,
-            organism=organismo,
-            measure=measure,
-            combine=NULL)
-
-    sim.df <- as.data.frame(sim)
-    sim.df$go1 <- row.names(sim.df)
-    sim.df <- gather(sim.df, go2, similarity, -go1)
-    sim.df <- sim.df[!is.na(sim.df$similarity),]
-
-    ## feature 'by' is attached to 'go1'
-    sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
-    sim.df$go2 <- as.character(sim.df$go2)
-
-    ID2 <- x[,ID]
-    GO_to_remove <- character()
-    for (i in seq_along(ID2)) {
-        ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
-        ## if length(ii) == 1, then go1 == go2
-        if (length(ii) < 2) 
-            next
-
-        sim_subset <- sim.df[ii,]
-        jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
-
-        ## sim.df <- sim.df[-ii[-jj]]
-        GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
-    }
-    x <- x[!(x[,ID] %in% GO_to_remove),]
-    return(x)
-}
-
-
-# Enriquecimineto GO
-enriquecimientoGO <- function(listaGenes, longSinGO="?") {
-    ontologies = c("BP", "CC")
-    orfId <- org.Sc.sgdGO
-    universe <- mappedkeys(orfId)
-    catego1 <- as.character(listaGenes)
+# Buscamos enriquecimineto GO
+enriquecimientoGO_Gprofiler <- function(listaGenes, longSinGO="?", filtro="GO", especie="otro") {
+    corte = 0.001
+    # Buscamos asociacion a terminos GO, y corregimos por FDR
+    resultado <- gprofiler(listaGenes,organism = especie, significant = F, correction_method = "fdr", 
+                         src_filter = filtro, max_p_value="0.05")
+    # Nos quedamos solo con las columnas que nos interesan, y cambiamos la de p.value por el metodo de correccion
+    resultado = resultado[,c("term.name", "p.value", "term.id", "domain")]
+    colnames(resultado) = c("Term", "FDR", "term.id", "domain")
     
-    # Apuntamos cuantos genes de nuestro cluster no tinene GO asociados
-    pos = !(listaGenes %in% universe)
-    longSinGO = sum(pos)
     
     salida = list()
+    ontologies = c("BP", "CC")
     for(ont in ontologies) {
-        # Podriamos cambiar universeGeneIds por una lista de identificadores de entrez, pero dejandolo asi
-        # es mas facil ver cuando hay genes que no tienen ningun termino GO asociado
-        params <- new("GOHyperGParams" , geneIds = catego1,
-                    universeGeneIds = universe , ontology = ont , pvalueCutoff =0.001,
-                    conditional =F , testDirection = "over" , annotation ="org.Sc.sgd")
-        hgOver <- hyperGTest(params)
-        
-        
-        ## Ajustamos el p-valor con FDR
-        # Get the p-values of the test
-        hgOver.pv <- pvalues(hgOver)
-        # Adjust p-values for multiple test (FDR)
-        hgOver.pv.fdr <- p.adjust(hgOver.pv,'fdr')
-        # Guardamos los valores del FDR en el objeto de resultados
-        # Si ninguno tiene p-valor inferior a 0.001 sale error, asi que lo suprimimos
-        if (sum(hgOver.pv < 0.001) == 0) {
-            suppressWarnings(result <- summary(hgOver))
-        } else {
-            result <- summary(hgOver)
-        }
-    
+        # Guardamos en una variable a parte los GO asociados a este GO
+        pos = resultado[,"domain"] == ont
+        resultado_temp = resultado[pos,]
+        resultado_temp[,"domain"] = NULL
         # Si no hay resultados, esta parte sobra
-        if(dim(result)[1] != 0) {
-            longi = dim(result)[1]
-            FDR = hgOver.pv.fdr[1 : longi]
-            names(FDR) = NULL
-            result["FDR"] <- FDR
-            if(ont == "BP") {
-                resultsalida <- result[, c("Term", "FDR", "GOBPID")]
-            } else {
-                resultsalida <- result[, c("Term", "FDR", "GOCCID")]
-            }
-            # select the GO terms with adjusted p-value less than the cut off
-            
-            resultsalida = simplificar(resultsalida, ont, cutoff=0.7, by="FDR", 
-                                 select_fun=min, measure="Rel", organismo = "yeast")
+        if(dim(resultado_temp)[1] != 0) {
+            ### Lo de simplificar habria que cambiarlo
               
-        
-            resultsalida <- resultsalida[resultsalida[, "FDR"] < 0.001, ]
-            if (nrow(resultsalida) == 0) {
+            #       resultado_temp = simplificar(resultado_temp, ont, cutoff=0.7, by="FDR", 
+            #                                  select_fun=min, measure="Rel", organismo = "otro", ID="term.id")
+              #####
+            # Filtramos por el valor minimo indicado al inicio de la funcion
+            pos = resultado_temp[,"FDR"] < corte
+            resultado_temp = resultado_temp[pos,]
+              
+            if (nrow(resultado_temp) == 0) {
                 salida[[ont]] = "No summarized results with FDR < 0.001"
             } else {
-                salida[[ont]] = resultsalida
+                salida[[ont]] = resultado_temp
             }
-        } else {
-            salida[[ont]] = "There weren't adjusted p values < 0.001 before GO summary"
-        }
+            } else {
+                salida[[ont]] = "There weren't FDR corrected values < 0.05 before GO summary"
+            }
     }
     salida[["noGO"]] = longSinGO
     return(salida)
@@ -213,7 +205,7 @@ plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE
         plotear(DatosFilt, clu, clu_comp, ran1 = 0.35, ran2 = 0.65, go = FALSE, seguir = FALSE)
     }
     if (go == TRUE) {
-        salida = enriquecimientoGO(rownames(DatosFilt))
+        salida = enriquecimientoGO_Gprofiler(rownames(DatosFilt), especie="spombe")
         # Reducimos los decimales que aparecen para los GO en SOTA
         options("scipen"=-100, "digits"=3)
         print("##")
@@ -331,13 +323,16 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
   return(nodos)
 }
 
-# # PAra pruebas
+# # Para pruebas
 # # Al llamar global_SOTA
+# Matriz_filtr = Matriz_6
 # clusters_test = "inicio"
 # reanalizar = "inicio"
 # s.sota = 0
 # clu_comp = ""
 # nodos=c()
+# record_silueta = "Silueta"
+# go = TRUE
 # 
 # #En cada iteracion
 # Matriz_6 = Matriz_filtr
@@ -453,16 +448,15 @@ generarArbol <- function(barbol) {
 # # Funcion para calcular la varianza de las columnas de una matriz
 # colVars <- function(x, na.rm=FALSE, dims=1, unbiased=TRUE, SumSquares=FALSE,
 #                     twopass=FALSE) {
-#       if (SumSquares) return(colSums(x^2, na.rm, dims))
-#       N <- colSums(!is.na(x), FALSE, dims)
-#       Nm1 <- if (unbiased) N-1 else N
-#       if (twopass) {x <- if (dims==length(dim(x))) x - mean(x, na.rm=na.rm) else
-#                          sweep(x, (dims+1):length(dim(x)), colMeans(x,na.rm,dims))}
-#       (colSums(x^2, na.rm, dims) - colSums(x, na.rm, dims)^2/N) / Nm1
+#     if (SumSquares) return(colSums(x^2, na.rm, dims))
+#     N <- colSums(!is.na(x), FALSE, dims)
+#     Nm1 <- if (unbiased) N-1 else N
+#     if (twopass) {x <- if (dims==length(dim(x))) x - mean(x, na.rm=na.rm) else
+#              sweep(x, (dims+1):length(dim(x)), colMeans(x,na.rm,dims))}
+#     (colSums(x^2, na.rm, dims) - colSums(x, na.rm, dims)^2/N) / Nm1
 # }
 # 
 # stderr <- function(x) sqrt(var(x,na.rm=TRUE)/length(na.omit(x)))
-
 ```
 
 # Creacion de clusters mediante SOTA
@@ -510,4 +504,8 @@ if (recursivo == TRUE) {
 }
 
 ```
+
+
+
+
 
