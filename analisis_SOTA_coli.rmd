@@ -69,6 +69,7 @@ library("clValid")
 library("GO.db")
 library("topGO")
 library("GOstats")
+library("gProfileR")
 library("biomaRt")
 library("org.EcK12.eg.db")
 library("clusterProfiler")
@@ -76,47 +77,88 @@ library("GOSemSim")
 library("tidyr")
 ################################################# Funciones  ##########################################################
 
-# Funcion para eliminar GO solapantes por similitud lexica (0.7)
-simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro") {
-    ## to satisfy codetools for calling gather
-    # Con esto indicamos la similitud entre cada GO
-    go1 <- go2 <- similarity <- NULL
+# # Funcion para eliminar GO solapantes por similitud lexica (0.7)
+# simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro") {
+#     ## to satisfy codetools for calling gather
+#     # Con esto indicamos la similitud entre cada GO
+#     go1 <- go2 <- similarity <- NULL
+# 
+#     ID = paste("GO", ont, "ID", sep="")
+#     rownames(x) = x[,ID]
+# 
+# 
+#     sim <- mgoSim(x[,ID], x[,ID],
+#             ont=ont,
+#             organism=organismo,
+#             measure=measure,
+#             combine=NULL)
+# 
+#     sim.df <- as.data.frame(sim)
+#     sim.df$go1 <- row.names(sim.df)
+#     sim.df <- gather(sim.df, go2, similarity, -go1)
+#     sim.df <- sim.df[!is.na(sim.df$similarity),]
+# 
+#     ## feature 'by' is attached to 'go1'
+#     sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
+#     sim.df$go2 <- as.character(sim.df$go2)
+# 
+#     ID2 <- x[,ID]
+#     GO_to_remove <- character()
+#     for (i in seq_along(ID2)) {
+#         ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
+#         ## if length(ii) == 1, then go1 == go2
+#         if (length(ii) < 2) 
+#             next
+# 
+#         sim_subset <- sim.df[ii,]
+#         jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
+# 
+#         ## sim.df <- sim.df[-ii[-jj]]
+#         GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
+#     }
+#     x <- x[!(x[,ID] %in% GO_to_remove),]
+#     return(x)
+# }
 
-    ID = paste("GO", ont, "ID", sep="")
-    rownames(x) = x[,ID]
 
+# Me he descargado de http://www.ecogene.org/?q=ecodownload/crossref los b.numbers asociados a todos mis genes
+idConv = read.csv(file="datos_cargar/coli_symblBname.txt", sep="\t")
 
-    sim <- mgoSim(x[,ID], x[,ID],
-            ont=ont,
-            organism=organismo,
-            measure=measure,
-            combine=NULL)
-
-    sim.df <- as.data.frame(sim)
-    sim.df$go1 <- row.names(sim.df)
-    sim.df <- gather(sim.df, go2, similarity, -go1)
-    sim.df <- sim.df[!is.na(sim.df$similarity),]
-
-    ## feature 'by' is attached to 'go1'
-    sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
-    sim.df$go2 <- as.character(sim.df$go2)
-
-    ID2 <- x[,ID]
-    GO_to_remove <- character()
-    for (i in seq_along(ID2)) {
-        ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
-        ## if length(ii) == 1, then go1 == go2
-        if (length(ii) < 2) 
-            next
-
-        sim_subset <- sim.df[ii,]
-        jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
-
-        ## sim.df <- sim.df[-ii[-jj]]
-        GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
+# Buscamos enriquecimineto GO con Gprofiler
+enriquecimientoKEGG <- function(listaGenes, longSinGO="?", especie="eco", idConv1=idConv) {
+#     # Poner esto aqui es una guarrada, pero no voy a buscar otra forma a no ser de que se vaya  ausar mas el script
+#     idConv1 = read.csv(file="datos_cargar/coli_symblBname.txt", sep="\t")
+    corte = 0.001
+    
+    # Convertimos los gene symbol a b numbers en coli
+    if (especie == "eco") {
+        pos = idConv1[,"Input"] %in% listaGenes
+        listaGenes1 = as.character(idConv1[pos, "b.number"])
+        listaGenes1 = unique(listaGenes1)
+    } else { # Supongo que de adaptar esto a otras especies tendre mas suerte con los identificadores, sino, se adaptara
+        listaGenes1 = listaGenes
     }
-    x <- x[!(x[,ID] %in% GO_to_remove),]
-    return(x)
+    
+    
+    # Esta funcion olo acepta b numbers de identificador (puede que tambien locus names)
+    salida = enrichKEGG(listaGenes1, organism = especie, pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
+              qvalueCutoff = 0.1, use_internal_data = FALSE)
+    salida = (summary(salida))
+    salida = salida[,c("Description", "p.adjust", "qvalue", "GeneRatio", "ID")]
+    colnames(salida) = c("Description", "FDR", "qvalue", "GeneRatio", "ID")
+    
+    # Nos quedamos con los que superen la fdr minima acordada
+    pos = salida[,"FDR"] < corte
+    salida_temp = salida[pos,]
+
+    salida_list = list()
+    # Si no hay resultados, esta parte sobra
+    if(dim(salida_temp)[1] != 0) {
+        salida_list[["KEGG"]] = salida_temp
+        } else {
+            salida_list[["KEGG"]] = paste("There weren't FDR corrected values < ", corte, " for any KEGG pathway", sep="")
+        }
+    return(salida_list)
 }
 
 
@@ -210,7 +252,7 @@ enriquecimientoGO <- function(listaGenes) {
 
 
 # Funcion para generar el plot
-plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE, valor_silueta) {
+plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE, valor_silueta, kegg = TRUE) {
     eje = 2
     for(i in 1: nrow(DatosFilt)) {
         if(i == 1) {
@@ -260,6 +302,16 @@ plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE
         }
         # Volvemos a las condiciones por defecto, que si no todos los numeros se muestran asi
         options("scipen"= NULL, "digits"=7)
+    } 
+    
+    if (kegg == TRUE) {
+        # Reducimos los decimales que aparecen para los GO en SOTA
+        options("scipen"=-100, "digits"=3)
+        salida = enriquecimientoKEGG(rownames(DatosFilt), especie="eco")
+        print("############################# KEGG enrichment ######################################")
+        print((salida[["KEGG"]]))
+        # Volvemos a las condiciones por defecto, que si no todos los numeros se muestran asi
+        options("scipen"= NULL, "digits"=7)
     }
 }
 
@@ -293,7 +345,7 @@ SOTA <- function(Matriz_6, ciclos, escala, recursivo=FALSE) {
 
 
 # Funcion para realizar todo el analisis con sota y generar plots de clusters no demasiado grandes
-global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c(), record_silueta = "Silueta", recursivo=TRUE, go=TRUE) {
+global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c(), record_silueta = "Silueta", recursivo=TRUE, go = TRUE, kegg = TRUE) {
     if(clu_comp != "") {
         # Si en algun momento hay que acelerar el proceso esto hay q moverlo
         dir.create(file.path(paste(dir, "/salida", fin, sep="")), showWarnings = FALSE)
@@ -306,7 +358,7 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
             pos = s.sota$clust == clu
             DatosFilt = Matriz_6[pos,]
             valor_silueta = record_silueta[as.numeric(clu)]
-            plotear(DatosFilt, clu, clu_comp, go=go, valor_silueta=valor_silueta)
+            plotear(DatosFilt, clu, clu_comp, go=go, valor_silueta=valor_silueta, kegg=kegg)
             nodos = append(nodos, paste(as.character(clu_comp), ".", as.character(clu), sep = ""))
         }
         ## Vamos a dividir los clusters mas grandes
@@ -363,7 +415,9 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
 # clu_comp = ""
 # nodos=c()
 # record_silueta = "Silueta"
-# go = TRUE
+# go = FALSE
+# kegg=TRUE
+# clu_comp2 = 0
 # 
 # #En cada iteracion
 # Matriz_6 = Matriz_filtr
@@ -512,13 +566,15 @@ print(spear)
 boxplot(Matriz_6)
 summary(Matriz_6)
 
-escala = nrow(Matriz_6) / 10
+escala = nrow(Matriz_6) / 30
 # Si queremos que el arbol sea recursivo, reursivo=TRUE
 recursivo=FALSE
 # Si queremos busqueda de GO
-busqueda_go = TRUE
+busqueda_go = FALSE
+# Si queremos busqueda de KEGG ################(No consigo desactivarla desde aqui)###############
+busqueda_kegg = FALSE
 
-arbol = global_SOTA(Matriz_6, escala = escala, fin=fin, recursivo=recursivo, go=busqueda_go)
+arbol = global_SOTA(Matriz_6, escala=escala, fin=fin, recursivo=recursivo, go=busqueda_go, kegg=busqueda_kegg)
 ```
 
 # Arbol de los clusters generados con mas de 10 genes
