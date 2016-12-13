@@ -11,6 +11,7 @@ library("topGO")
 library("GOstats")
 library("biomaRt")
 library("org.Sc.sgd.db")
+library("org.Hs.eg.db")
 library("GOSemSim")
 library("tidyr")
 library("clValid")
@@ -19,7 +20,7 @@ library("openxlsx")
 
 ############################################### Funciones ######################################################
 # Funcion para generar el plot
-plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE, valor_silueta, dir1=".") {
+plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE, valor_silueta, dir1=".", fin) {
   eje = 2
   for(i in 1: nrow(DatosFilt)) {
     if(i == 1) {
@@ -45,7 +46,7 @@ plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE
     plotear(DatosFilt, clu, clu_comp, ran1 = 0.35, ran2 = 0.65, go = FALSE, seguir = FALSE)
   }
   if (go == TRUE) {
-    salida = enriquecimientoGO(rownames(DatosFilt))
+    salida = enriquecimientoGO(rownames(DatosFilt), fin)
     # Reducimos los decimales que aparecen para los GO en SOTA
     # options("scipen"=-100, "digits"=3)
 #     for (nom in names(salida)) {
@@ -70,16 +71,44 @@ plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE
 
 
 # Enriquecimineto GO
-enriquecimientoGO <- function(listaGenes) {
+enriquecimientoGO <- function(listaGenes, fin) {
   ontologies = c("BP", "CC")
-  orfId <- org.Sc.sgdGO
-  universe <- mappedkeys(orfId)
-  catego1 <- as.character(listaGenes)
+  if (fin == "_levadura") {
+      orfId <- org.Sc.sgdGO
+      anotacion = "org.Sc.sgd"
+      especie = "yeast"
+      
+      universe <- mappedkeys(orfId)
+      catego1 <- as.character(listaGenes)
+  } else if (fin == "_HeLa") {
+      orfId <- org.Hs.egGO
+      anotacion = "org.Hs.eg"
+      especie = "human"
+      
+      # Cambiamos los IDs a entrez
+      xx1 <- as.list(org.Hs.egALIAS2EG)
+      listaGenes1 = xx1[listaGenes]
+      names(listaGenes1) = NULL
+      catego1 = unlist(listaGenes1)
+      catego1 = unique(catego1)
+      
+      # Guardamos una lista con todos los genes que tienen GO asociados
+      orfId <- org.Hs.egGO
+      conGO <- mappedkeys(orfId)
+      # Guardamos una lista con todos los genes
+      universe <- xx1
+      names(universe) = NULL
+      universe = unlist(universe)
+      universe = unique(universe)
+      
+  }
+  
+  
   salida = list()
   for(ont in ontologies) {
     params <- new("GOHyperGParams" , geneIds = catego1,
                 universeGeneIds = universe , ontology = ont , pvalueCutoff =0.001,
-                conditional =F , testDirection = "over" , annotation ="org.Sc.sgd")
+                conditional =F , testDirection = "over" , annotation = anotacion)
     hgOver <- hyperGTest(params)
     
     
@@ -104,7 +133,7 @@ enriquecimientoGO <- function(listaGenes) {
       # select the GO terms with adjusted p-value less than the cut off
       
       resultsalida = simplificar(resultsalida, ont, cutoff=0.7, by="FDR", 
-                                 select_fun=min, measure="Rel", organismo = "yeast")
+                                 select_fun=min, measure="Rel", organismo = especie)
       
 
       resultsalida <- resultsalida[resultsalida[, "FDR"] < 0.001, ]
@@ -123,7 +152,7 @@ enriquecimientoGO <- function(listaGenes) {
 
 
 # Funcion para eliminar GO solapantes por similitud lexica (0.7)
-simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "yeast") {
+simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro") {
       ## to satisfy codetools for calling gather
       # Con esto indicamos la similitud entre cada GO
       go1 <- go2 <- similarity <- NULL
@@ -169,9 +198,9 @@ simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="R
 }
 
 # Funcion para generar silueta y lanzar las funciones para generar plot y guardar GOs
-selecClusters <- function(div_clusters1, dir1, grupos1, go=TRUE) {
+selecClusters <- function(div_clusters1, dir1, grupos1, go=TRUE, fin) {
     for ( i in 1:length(div_clusters1)) {
-        s.sota = readRDS(paste(dir1, "/salida_levadura_", div_clusters1[i], "/0", sep=""))
+        s.sota = readRDS(paste(dir1, "/salida",fin, "_", div_clusters1[i], "div", "/0", sep=""))
         Matriz_filtr = s.sota$data
         # Analizamos la robustez de los clustes generados con silhouette
         distance = dist(Matriz_filtr, method = "euclidean")
@@ -187,7 +216,7 @@ selecClusters <- function(div_clusters1, dir1, grupos1, go=TRUE) {
                 DatosFilt = Matriz_filtr[pos,]
                 valor_silueta = silueta_clust[as.numeric(clu)]
                 clu_comp = paste(div_clusters1[i], "div", "_0",sep="")
-                plotear(DatosFilt, clu, clu_comp, go=go, valor_silueta=valor_silueta, dir1=dir1)
+                plotear(DatosFilt, clu, clu_comp, go=go, valor_silueta=valor_silueta, dir1=dir1, fin=fin)
             }
         }
 
@@ -201,7 +230,7 @@ juntarFicheros <- function (dir1, div_clusters, grupos) {
     dir2 = paste(dir1, "/salida_GO/", sep="")
     ficheros = list.files(dir2)
     tabla_GO = list()
-    colnames(tabla_GO) = paste(div_clusters, "div", sep="")
+    # colnames(tabla_GO) = paste(div_clusters, "div", sep="")
     for ( i in div_clusters) {
         tabla_temp = list()
         pos_fich = grep(paste("_", i, "div", sep=""), ficheros)
@@ -269,17 +298,33 @@ juntarFicheros <- function (dir1, div_clusters, grupos) {
 
 
 ################################################# Programa  #####################################################
+# # levadura
+# diez = c(2,4,6,8,10,11)
+# quince = c(8,13,14,11,9,10)
+# veinte = c(14,15,NA,NA,NA,NA)
+# treinta = c(30,31,16,17,NA,NA)
 
-dir1 = "/media/julen/TOSHIBA_EXT/datos/paper/levadura"
+# dir1 = "/media/julen/TOSHIBA_EXT/datos/paper/levadura"
+# fin = "_levadura"
+# fich_salida = "Selección_clusters_levadura.pdf"
+
+# HeLa
+diez = c(5,8,9,10,NA,NA,NA,NA,NA,NA,NA,NA)
+quince = c(13,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA)
+veinte = c(6,12,13,16,17,20,21,NA,NA,NA,NA,NA)
+treinta = c(12,13,14,15,20,21,22,23,24,25,26,27)
+
+dir1 = "/media/julen/TOSHIBA_EXT/datos/paper/HeLa"
+fin = "_HeLa"
+fich_salida = "Selección_clusters_HeLa.pdf"
+
+
+### Parte fija  ###
+
 setwd(dir1)
 
 # Seleccion de los clusters
 div_clusters = c(10,15,20,30)
-
-diez = c(2,4,6,8,10,11)
-quince = c(8,13,14,11,9,10)
-veinte = c(14,15,NA,NA,NA,NA)
-treinta = c(30,31,16,17,NA,NA)
 grupos <- matrix(c(diez, quince, veinte, treinta),ncol=4)
 colnames(grupos) = div_clusters
 
@@ -287,9 +332,9 @@ colnames(grupos) = div_clusters
 dir.create(file.path(paste(dir1, "/salida_GO", sep="")), showWarnings = FALSE)
 
 # Lanzamos el programa
-pdf("Selección_clusters_levadura.pdf")
+pdf(fich_salida)
 par(mfrow=c(2,2))
-selecClusters(div_clusters, dir1, grupos, go=FALSE)
+selecClusters(div_clusters, dir1, grupos, go=FALSE, fin)
 dev.off()
 
 
