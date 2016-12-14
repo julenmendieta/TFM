@@ -1,0 +1,513 @@
+---
+title: "SOTA levadura"
+output: pdf_document
+---
+
+
+```{r echo=FALSE, message = FALSE, include = FALSE}
+##analisis_SOTA_levadura.rmd
+##2016-11-23 julenmendieta92@gmail.com
+##1-Abrir matriz de datos de expresion genica, imputar datos faltantes y convertir a ranking
+##2-Realizar clustering mediante algoritmo SOTA, y buscar terminos GO asociados a cada cluster
+##2-Comprobar robustez del clustering con silhouette
+
+library("impute")
+dir = "/media/julen/TOSHIBA_EXT/datos/paper/levadura"
+setwd(dir)
+
+matriz = readRDS(file="datos_cargar/matriz_lev.rds")
+fin="_levadura"
+
+matriz = matriz[,c("TR", "RS", "RA", "TLRi", "PS", "PA")]
+
+# Guardamos solo los genes de los que tengamos info en al menos 4 variables, y de distintas moleculas
+# Para SOTA utilizamos TLRi
+matriz1 = matriz[,c("TR","RS","RA")]
+posiciones= apply(!is.na(matriz1), 1, sum)
+pos = posiciones >= 2
+print("Genes con 2 de 3 variables en RNA")
+table(pos)
+matriz1 = matriz1[pos,]
+
+temporal = impute.knn(as.matrix(matriz1) ,k = 10, rowmax = 0.5, colmax = 0.8, maxp = 1500, rng.seed=362436069)
+matriz1 = as.data.frame(temporal$data)
+
+matriz2 = matriz[,c("TLRi","PS","PA")]
+posiciones= apply(!is.na(matriz2), 1, sum)
+pos = posiciones >= 2
+print("Genes con 2 de 3 variables en RNA")
+table(pos)
+matriz2 = matriz2[pos,]
+# Generamos valores faltantes con el knn
+temporal = impute.knn(as.matrix(matriz2) ,k = 10, rowmax = 0.5, colmax = 0.8, maxp = 1500, rng.seed=362436069)
+matriz2 = as.data.frame(temporal$data)
+
+# Juntamos las dos matrices
+pos = rownames(matriz1) %in% rownames(matriz2)
+table(pos)
+Matriz_6 = data.frame(row.names = rownames(matriz1)[pos])
+Matriz_6[,c("TR","RS","RA")] = matriz1[rownames(Matriz_6),c("TR","RS","RA")]
+Matriz_6[,c("TLRi","PS","PA")] = matriz2[rownames(Matriz_6),c("TLRi","PS","PA")]
+
+# Pasamos a matriz asegurandonos de que si alguna columna esta como factor, no se guarde su indice
+indx <- sapply(Matriz_6, is.factor)
+if (sum(indx) > 0) {
+    Matriz_6[indx] <- lapply(Matriz_6[indx], function(x) as.numeric(as.character(x)))
+}
+Matriz_6 = as.matrix(Matriz_6)
+
+# Generamos ranking
+for(col in 1:ncol(Matriz_6)) {
+    Matriz_6[, col] = rank(Matriz_6[, col], na.last = "keep")
+}
+# Lo pasamos a escala de 0 a 1
+Matriz_6 = t(t(Matriz_6)/apply(Matriz_6,2,max, na.rm = TRUE))
+
+#######################
+library("phytools")
+library("clValid")
+library("GO.db")
+library("topGO")
+library("GOstats")
+library("biomaRt")
+library("org.Sc.sgd.db")
+library("clusterProfiler")
+library("GOSemSim")
+library("tidyr")
+################################################# Funciones  ##########################################################
+
+# Funcion para eliminar GO solapantes por similitud lexica (0.7)
+simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro") {
+    ## to satisfy codetools for calling gather
+    # Con esto indicamos la similitud entre cada GO
+    go1 <- go2 <- similarity <- NULL
+
+    ID = paste("GO", ont, "ID", sep="")
+    rownames(x) = x[,ID]
+
+
+    sim <- mgoSim(x[,ID], x[,ID],
+            ont=ont,
+            organism=organismo,
+            measure=measure,
+            combine=NULL)
+
+    sim.df <- as.data.frame(sim)
+    sim.df$go1 <- row.names(sim.df)
+    sim.df <- gather(sim.df, go2, similarity, -go1)
+    sim.df <- sim.df[!is.na(sim.df$similarity),]
+
+    ## feature 'by' is attached to 'go1'
+    sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
+    sim.df$go2 <- as.character(sim.df$go2)
+
+    ID2 <- x[,ID]
+    GO_to_remove <- character()
+    for (i in seq_along(ID2)) {
+        ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
+        ## if length(ii) == 1, then go1 == go2
+        if (length(ii) < 2) 
+            next
+
+        sim_subset <- sim.df[ii,]
+        jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
+
+        ## sim.df <- sim.df[-ii[-jj]]
+        GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
+    }
+    x <- x[!(x[,ID] %in% GO_to_remove),]
+    return(x)
+}
+
+
+# Enriquecimineto GO
+enriquecimientoGO <- function(listaGenes, longSinGO="?") {
+    ontologies = c("BP", "CC")
+    orfId <- org.Sc.sgdGO
+    universe <- mappedkeys(orfId)
+    catego1 <- as.character(listaGenes)
+    
+    # Apuntamos cuantos genes de nuestro cluster no tinene GO asociados
+    pos = !(listaGenes %in% universe)
+    longSinGO = sum(pos)
+    
+    salida = list()
+    for(ont in ontologies) {
+        # Podriamos cambiar universeGeneIds por una lista de identificadores de entrez, pero dejandolo asi
+        # es mas facil ver cuando hay genes que no tienen ningun termino GO asociado
+        params <- new("GOHyperGParams" , geneIds = catego1,
+                    universeGeneIds = universe , ontology = ont , pvalueCutoff =0.001,
+                    conditional =F , testDirection = "over" , annotation ="org.Sc.sgd")
+        hgOver <- hyperGTest(params)
+        
+        
+        ## Ajustamos el p-valor con FDR
+        # Get the p-values of the test
+        hgOver.pv <- pvalues(hgOver)
+        # Adjust p-values for multiple test (FDR)
+        hgOver.pv.fdr <- p.adjust(hgOver.pv,'fdr')
+        # Guardamos los valores del FDR en el objeto de resultados
+        # Si ninguno tiene p-valor inferior a 0.001 sale error, asi que lo suprimimos
+        if (sum(hgOver.pv < 0.001) == 0) {
+            suppressWarnings(result <- summary(hgOver))
+        } else {
+            result <- summary(hgOver)
+        }
+    
+        # Si no hay resultados, esta parte sobra
+        if(dim(result)[1] != 0) {
+            longi = dim(result)[1]
+            FDR = hgOver.pv.fdr[1 : longi]
+            names(FDR) = NULL
+            result["FDR"] <- FDR
+            if(ont == "BP") {
+                resultsalida <- result[, c("Term", "FDR", "GOBPID")]
+            } else {
+                resultsalida <- result[, c("Term", "FDR", "GOCCID")]
+            }
+            # select the GO terms with adjusted p-value less than the cut off
+            
+            resultsalida = simplificar(resultsalida, ont, cutoff=0.7, by="FDR", 
+                                 select_fun=min, measure="Rel", organismo = "yeast")
+              
+        
+            resultsalida <- resultsalida[resultsalida[, "FDR"] < 0.001, ]
+            if (nrow(resultsalida) == 0) {
+                salida[[ont]] = "No summarized results with FDR < 0.001"
+            } else {
+                salida[[ont]] = resultsalida
+            }
+        } else {
+            salida[[ont]] = "There weren't adjusted p values < 0.001 before GO summary"
+        }
+    }
+    salida[["noGO"]] = longSinGO
+    return(salida)
+}
+
+
+# Funcion para generar el plot
+plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE, valor_silueta) {
+    eje = 2
+    for(i in 1: nrow(DatosFilt)) {
+        if(i == 1) {
+            plot(DatosFilt[1 ,], type ="l", col ="grey", ylim = range(c(ran1 ,ran2)),
+               axes = FALSE , xaxt ="n", xlab ="", ylab ="")
+            axis(1 , at =1:6 , labels = colnames(DatosFilt),
+               cex.axis = eje)
+        } else {
+            par(new = TRUE)
+            plot(DatosFilt[i ,] , type ="l", col ="grey", ylim = range(c(ran1 ,ran2)) ,
+               axes = FALSE , xlab ="", ylab ="")
+        }
+    }
+    par(new = TRUE)
+    plot(apply(DatosFilt, 2, mean), type ="l", ylim = range(c( ran1 ,ran2)), xaxt = "n", 
+       xlab ="Variables", ylab ="PromedioCluster", 
+       main = paste("Cluster", "_", clu_comp, ".", as.character(clu), "_", nrow(DatosFilt), "_genes", sep =""),
+       cex.axis = eje, sub=valor_silueta)
+    lines(y = apply(DatosFilt[,1:3], 2, mean), x = c(1,2,3), col="blue", lwd=2)
+    lines(y = apply(DatosFilt[,3:6], 2, mean), x = c(3,4,5,6), col="red", lwd=2)
+    
+    if ((min(DatosFilt) >= 0.35) & (max(DatosFilt) <= 0.65) & (seguir == TRUE)) {
+        plotear(DatosFilt, clu, clu_comp, ran1 = 0.35, ran2 = 0.65, go = FALSE, seguir = FALSE)
+    }
+    if (go == TRUE) {
+        salida = enriquecimientoGO(rownames(DatosFilt))
+        # Reducimos los decimales que aparecen para los GO en SOTA
+        options("scipen"=-100, "digits"=3)
+        print("##")
+        print(paste("En este cluster hay ", salida[["noGO"]], 
+                    " genes sin terminos GO asociados (de cualquier subontologia)", sep=""))
+        print("##")
+        for (nom in names(salida)) {
+            # Reducimos la longitud del nombre del GO si es demasiado largo
+            if (length(salida[[nom]]) > 1) {
+            for (c in 1:nrow(salida[[nom]])){
+                if (nchar(salida[[nom]][c, "Term"]) > 74) {
+                    salida[[nom]][c, "Term"] = paste(substr(salida[[nom]][c, "Term"], 1, 74), "...", sep = "")
+                }
+            }
+          }
+            if (nom != "noGO") {
+                print(paste("#############################", nom, "######################################"))
+                print(as.data.frame(salida[nom]), row.names = FALSE)
+            }
+          
+        }
+        # Volvemos a las condiciones por defecto, que si no todos los numeros se muestran asi
+        options("scipen"= NULL, "digits"=7)
+    }
+}
+
+
+# Funcion para lanzar el sota con una matriz de genes y devolver parametros de interes
+SOTA <- function(Matriz_6, ciclos, escala, recursivo=FALSE) {
+    # He visto que se puede dar un error al hacer el sota, que se arregla al modificar los ciclos
+    s.sota=0
+    suppressWarnings((s.sota = sota(Matriz_6, maxCycles = ciclos, maxEpochs = 1000, distance = "euclidean", wcell = 0.01, 
+                pcell = 0.005, scell = 0.001, delta = 1e-04, neighb.level = 0, 
+                maxDiversity = 0.9, unrest.growth = TRUE)))
+    if (class(s.sota) != "sota") {
+        s.sota = sota(Matriz_6, maxCycles = (ciclos - 1), maxEpochs = 1000, distance = "euclidean", wcell = 0.01, 
+                pcell = 0.005, scell = 0.001, delta = 1e-04, neighb.level = 0, 
+                maxDiversity = 0.9, unrest.growth = TRUE)
+    }
+    s.sota$total
+    # Si no planteamos un analisis recursivo no guardamos nada en reanalizar
+    if (recursivo == FALSE) {
+        reanalizar = c()
+        clusters_test = names(table(s.sota$clust))
+    } else {
+        reanalizar = names(table(s.sota$clust)[!table(s.sota$clust) < escala])
+        # Solo nos quedamos con los clusters que tienen mas de 9 genes
+        clusters_test = names(table(s.sota$clust)[!table(s.sota$clust) <= 10])
+    }
+ 
+    salida <- list("clusters_test" = clusters_test, "reanalizar" = reanalizar, "sota" = s.sota)
+    return(salida)
+}
+
+
+# Funcion para realizar todo el analisis con sota y generar plots de clusters no demasiado grandes
+global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c(), record_silueta = "Silueta", recursivo=TRUE, go=TRUE) {
+    if(clu_comp != "") {
+        # Si en algun momento hay que acelerar el proceso esto hay q moverlo
+        dir.create(file.path(paste(dir, "/salida", fin, sep="")), showWarnings = FALSE)
+        #
+        salida = paste(dir, "/salida", fin, "/", clu_comp, sep = "")
+        saveRDS(s.sota, salida)
+    }
+    for(clu in clusters_test) {
+        if (!(clu %in% reanalizar)) {
+            pos = s.sota$clust == clu
+            DatosFilt = Matriz_6[pos,]
+            valor_silueta = record_silueta[as.numeric(clu)]
+            plotear(DatosFilt, clu, clu_comp, go=go, valor_silueta=valor_silueta)
+            nodos = append(nodos, paste(as.character(clu_comp), ".", as.character(clu), sep = ""))
+        }
+        ## Vamos a dividir los clusters mas grandes
+        else {
+        # Si ya tenemos un objeto sota filtramos por el cluster de interes
+            if(class(s.sota) == "sota") {
+                # Primero guardamos la matriz que concierne al cluster de interes
+                pos = s.sota$clust == clu
+                table(pos)
+                Matriz_filtr = Matriz_6[pos,]
+        
+            }
+            # Si no hay objeto sota es que estamos en la primera iteracion y no se ha generado todavia, por lo que interesa toda
+            # la matriz
+            else {
+                Matriz_filtr = Matriz_6
+            }
+            # Si vamos a mantener una proporcionalidad, no podremos dividir por mas clusters cuando el numero de genes sea inferior
+          # a el total de genes analizados dividido por las 25 divisiones
+          ciclos = round(nrow(Matriz_filtr)/escala, digits = 0)
+          lista_sota = SOTA(Matriz_filtr, ciclos, escala, recursivo=recursivo)
+          
+          # Analizamos la robustez de los clustes generados con silhouette
+          distance = dist(Matriz_filtr, method = "euclidean")
+          clusters_int = as.integer(lista_sota[["sota"]]$clust)
+          names(clusters_int) = rownames(Matriz_filtr)
+          silueta = silhouette(x=clusters_int, dist=distance)
+          resumen = summary(silueta)
+          silueta_clust = resumen$clus.avg.widths
+          # Les ponemos a los valores de disimilitud media el valor del cluster del que provienen como prefijo
+          record_silueta1 = paste(record_silueta, round(silueta_clust, 2), sep = "_")
+      
+          # Con esto se hace el seguimiento del origen de cada cluster
+          if (clu_comp != "") {
+            clu_comp2 = paste(as.character(clu_comp), ".", clu, sep = "")
+          }
+          else {
+            clu_comp2 = 0
+          }
+          nodos = global_SOTA(Matriz_filtr, lista_sota[["clusters_test"]], lista_sota[["reanalizar"]], lista_sota[["sota"]], 
+                              escala = escala, clu_comp = clu_comp2, fin=fin, nodos=nodos, record_silueta = record_silueta1,
+                              recursivo=recursivo, go=go)
+        }
+    }
+  return(nodos)
+}
+
+# # PAra pruebas
+# # Al llamar global_SOTA
+# clusters_test = "inicio"
+# reanalizar = "inicio"
+# s.sota = 0
+# clu_comp = ""
+# nodos=c()
+# 
+# #En cada iteracion
+# Matriz_6 = Matriz_filtr
+# clusters_test = lista_sota[["clusters_test"]]
+# reanalizar = lista_sota[["reanalizar"]]
+# s.sota = lista_sota[["sota"]]
+# clu_comp = clu_comp2
+
+
+# Funcion para hacer el arbol con los nodos intermedios
+generarArbol <- function(barbol) {
+    salida=""
+    # for (ar in 1:12) {
+    for (ar in 1:length(barbol)) {
+  
+        # Si estamos en la posicion inicial, ponemos todas las parentesis
+        longi = length(strsplit(barbol[ar], "\\.")[[1]])
+        if (ar == 1) {
+            salida = paste(salida, paste(rep("(", longi), collapse=""), barbol[ar], ":", longi, ".0", sep="")
+        }
+        # Casos intermedios
+        # Si la longitud es igual que en el caso anterior, estamos en el mismo nivel, pero puede que en otro nodo
+        else if (longi == longi2) {
+            if (paste(strsplit(ent, "\\.")[[1]][1:longi2-1], collapse = ".") == 
+            paste(strsplit(barbol[ar], "\\.")[[1]][1:longi - 1], collapse = ".")) {
+                salida = paste(salida, ",", barbol[ar], ":", longi, ".0", sep="")
+            } else {
+                continuar = TRUE
+                contador = 0
+                while (continuar == TRUE) {
+                    contador = contador + 1
+                    if (paste(strsplit(ent, "\\.")[[1]][1:(longi2-contador)], collapse = ".") == 
+                    paste(strsplit(barbol[ar], "\\.")[[1]][1:(longi - contador)], collapse = ".")) {
+                        continuar = FALSE
+                    }
+                }
+                #Le quitamos a contador la posicion del ultimo numero, que no nos cuenta como un nivel mas
+                contador = contador - 1
+                ## Una vez que sabemos donde esta la diferencia, primero cerramos la rama anterior
+                for (cont in 1:contador) {
+                    # Ponemos el cierre de nodo
+                    salida = paste(salida, ")", paste(strsplit(ent, "\\.")[[1]][1:(longi2 - cont)], collapse="."),
+                                 ":", (longi2 - cont), ".0", sep = "")
+                }
+                # le quitamos 1 a contador, porque se comparte nivel con el ultimo nodo puesto
+                salida = paste(salida, ",",paste(rep("(", contador), collapse=""), barbol[ar], ":", longi, ".0", sep="")
+          }
+        }
+        # Si la longitud es menor, hay que cerrar parentesis
+        else if (longi < longi2) {
+            cierre = longi2 - longi
+            for (cie in 1:cierre) {
+                # Ponemos el cierre de nodo
+                salida = paste(salida, ")", paste(strsplit(ent, "\\.")[[1]][1:longi2 - cie], collapse="."),
+                               ":", longi, ".0", sep = "")
+                # Como hemos bajado un nivel, se lo restamos a longi2
+                longi2 = longi2 - 1
+            }
+            # Si estamos al mismo nivel pero en otro nodo hay que tenerlo en cuenta
+            if (paste(strsplit(ent, "\\.")[[1]][1:longi2 - 1], collapse=".") != 
+              paste(strsplit(barbol[ar], "\\.")[[1]][1:longi2 - 1], collapse=".")) {
+                ## Primero miramos cuantos niveles hay que bajar
+                continuar = TRUE
+                contador = 0
+                while (continuar == TRUE) {
+                    contador = contador + 1
+                    if (paste(strsplit(ent, "\\.")[[1]][1:(longi2-contador)], collapse = ".") == 
+                    paste(strsplit(barbol[ar], "\\.")[[1]][1:(longi - contador)], collapse = ".")) {
+                        continuar = FALSE
+                    }
+                }
+                # Le quitamos a contador la posicion del ultimo numero, que no nos cuenta como un nivel mas
+                contador = contador - 1
+                ## Una vez que sabemos donde esta la diferencia, primero cerramos la rama anterior
+                for (cont in 1:contador) {
+                    # Ponemos el cierre de nodo
+                    salida = paste(salida, ")", paste(strsplit(ent, "\\.")[[1]][1:(longi2 - cont)], collapse="."),
+                                 ":", (longi2 - cont), ".0", sep = "")
+                }
+                ## Ponemos el nuevo cluster
+                salida = paste(salida, ",",paste(rep("(", contador), collapse=""), barbol[ar], ":", longi, ".0", sep="")
+              } else {
+                    # Si no estamos en otro nodo ponemos la otra rama y listo
+                    salida = paste(salida, ",", barbol[ar], ":", longi, ".0", sep="")
+              }
+             
+        }
+        # Si la longitud es mayor, hay que abrir parentesis
+        else if (longi > longi2) {
+            sumar = longi - longi2
+            # Si vemos que ademas de subir de nivel se cambia de nodo, hay que cerrar el actual
+            if (paste(strsplit(ent, "\\.")[[1]][1:(longi2 - 1)], collapse=".") != 
+              paste(strsplit(barbol[ar], "\\.")[[1]][1:longi2 - 1], collapse=".")) {
+                nodo = paste(strsplit(ent, "\\.")[[1]][1:longi2 - 1], collapse=".")
+                salida = paste(salida, ")", nodo, ":", length(strsplit(nodo, "\\.")[[1]]), 
+                               ".0", ",",paste(rep("((", sumar), collapse=""), barbol[ar], ":", longi, ".0", sep="")
+                
+            } else {
+                salida = paste(salida, ",",paste(rep("(", sumar), collapse=""), barbol[ar], ":", longi, ".0", sep="")
+            }
+        }
+        # Si hemos llegado al final, ponemos el ";"
+        if (ar == length(barbol)) {
+            salida = paste(salida, ";", sep = "")
+        }
+        longi2 = longi
+        ent = barbol[ar]
+    }
+    return(salida)
+}
+
+
+# # Funcion para calcular la varianza de las columnas de una matriz
+# colVars <- function(x, na.rm=FALSE, dims=1, unbiased=TRUE, SumSquares=FALSE,
+#                     twopass=FALSE) {
+#       if (SumSquares) return(colSums(x^2, na.rm, dims))
+#       N <- colSums(!is.na(x), FALSE, dims)
+#       Nm1 <- if (unbiased) N-1 else N
+#       if (twopass) {x <- if (dims==length(dim(x))) x - mean(x, na.rm=na.rm) else
+#                          sweep(x, (dims+1):length(dim(x)), colMeans(x,na.rm,dims))}
+#       (colSums(x^2, na.rm, dims) - colSums(x, na.rm, dims)^2/N) / Nm1
+# }
+# 
+# stderr <- function(x) sqrt(var(x,na.rm=TRUE)/length(na.omit(x)))
+
+```
+
+# Creacion de clusters mediante SOTA
+
+```{r echo=FALSE}
+## Programa
+options(width = 100)
+# Correlaciones
+pear = round(cor(matriz, use="pairwise.complete.obs", method = "pearson"), 3)
+spear = round(cor(matriz, use="pairwise.complete.obs", method = "spearman"), 3)
+
+# Juntamos las matrices de correlacion
+
+for (c in 1:(ncol(matriz) - 1)) {
+    for (c2 in (c + 1):ncol(matriz)) {
+        spear[c, c2] = pear[c, c2]
+    }
+}
+print("Correlacion de Pearson (arriba) VS Spearman (abajo)")
+print(spear)
+
+boxplot(Matriz_6)
+summary(Matriz_6)
+
+escala = nrow(Matriz_6) / 10
+# Si queremos que el arbol sea recursivo, reursivo=TRUE
+recursivo=FALSE
+# Si queremos busqueda de GO
+busqueda_go = TRUE
+
+arbol = global_SOTA(Matriz_6, escala = escala, fin=fin, recursivo=recursivo, go=busqueda_go)
+```
+
+# Arbol de los clusters generados con mas de 10 genes
+
+```{r echo=FALSE}
+# Geneeramos el arbol de los clusters con mas de 10 genes
+arbol1 = generarArbol(arbol)
+arbol1 = read.newick(text = arbol1)
+plotTree(arbol1)
+# A partir de aqui dara error si el algoritmo no era recursivo, ya que no habra nodos
+if (recursivo == TRUE) {
+    arbol1$node.label[arbol1$node.label == ""] = "INICIO"
+    nodelabels(arbol1$node.label,cex=0.9,bg="white",srt=-90)
+}
+
+```
+
