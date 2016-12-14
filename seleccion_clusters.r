@@ -21,13 +21,13 @@ library("openxlsx")
 ############################################### Funciones ######################################################
 # Funcion para generar el plot
 plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE, valor_silueta, dir1=".", fin) {
-  eje = 2
+  eje = 1 # Esto es el tamanyo de las letras de la abcisa X
   for(i in 1: nrow(DatosFilt)) {
     if(i == 1) {
       plot(DatosFilt[1 ,], type ="l", col ="grey", ylim = range(c(ran1 ,ran2)),
            axes = FALSE , xaxt ="n", xlab ="", ylab ="")
       axis(1 , at =1:6 , labels = colnames(DatosFilt),
-           cex.axis = eje)
+           cex.axis = eje, )
     } else {
       par(new = TRUE)
       plot(DatosFilt[i ,] , type ="l", col ="grey", ylim = range(c(ran1 ,ran2)) ,
