@@ -77,55 +77,55 @@ library("GOSemSim")
 library("tidyr")
 ################################################# Funciones  ##########################################################
 
-# # Funcion para eliminar GO solapantes por similitud lexica (0.7)
-# simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro") {
-#     ## to satisfy codetools for calling gather
-#     # Con esto indicamos la similitud entre cada GO
-#     go1 <- go2 <- similarity <- NULL
-# 
-#     ID = paste("GO", ont, "ID", sep="")
-#     rownames(x) = x[,ID]
-# 
-# 
-#     sim <- mgoSim(x[,ID], x[,ID],
-#             ont=ont,
-#             organism=organismo,
-#             measure=measure,
-#             combine=NULL)
-# 
-#     sim.df <- as.data.frame(sim)
-#     sim.df$go1 <- row.names(sim.df)
-#     sim.df <- gather(sim.df, go2, similarity, -go1)
-#     sim.df <- sim.df[!is.na(sim.df$similarity),]
-# 
-#     ## feature 'by' is attached to 'go1'
-#     sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
-#     sim.df$go2 <- as.character(sim.df$go2)
-# 
-#     ID2 <- x[,ID]
-#     GO_to_remove <- character()
-#     for (i in seq_along(ID2)) {
-#         ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
-#         ## if length(ii) == 1, then go1 == go2
-#         if (length(ii) < 2) 
-#             next
-# 
-#         sim_subset <- sim.df[ii,]
-#         jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
-# 
-#         ## sim.df <- sim.df[-ii[-jj]]
-#         GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
-#     }
-#     x <- x[!(x[,ID] %in% GO_to_remove),]
-#     return(x)
-# }
+# Funcion para eliminar GO solapantes por similitud lexica (0.7)
+simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro") {
+    ## to satisfy codetools for calling gather
+    # Con esto indicamos la similitud entre cada GO
+    go1 <- go2 <- similarity <- NULL
+
+    ID = paste("GO", ont, "ID", sep="")
+    rownames(x) = x[,ID]
+
+
+    sim <- mgoSim(x[,ID], x[,ID],
+            ont=ont,
+            organism=organismo,
+            measure=measure,
+            combine=NULL)
+
+    sim.df <- as.data.frame(sim)
+    sim.df$go1 <- row.names(sim.df)
+    sim.df <- gather(sim.df, go2, similarity, -go1)
+    sim.df <- sim.df[!is.na(sim.df$similarity),]
+
+    ## feature 'by' is attached to 'go1'
+    sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
+    sim.df$go2 <- as.character(sim.df$go2)
+
+    ID2 <- x[,ID]
+    GO_to_remove <- character()
+    for (i in seq_along(ID2)) {
+        ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
+        ## if length(ii) == 1, then go1 == go2
+        if (length(ii) < 2) 
+            next
+
+        sim_subset <- sim.df[ii,]
+        jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
+
+        ## sim.df <- sim.df[-ii[-jj]]
+        GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
+    }
+    x <- x[!(x[,ID] %in% GO_to_remove),]
+    return(x)
+}
 
 
 # Me he descargado de http://www.ecogene.org/?q=ecodownload/crossref los b.numbers asociados a todos mis genes
 idConv = read.csv(file="datos_cargar/coli_symblBname.txt", sep="\t")
 
 # Buscamos enriquecimineto GO con Gprofiler
-enriquecimientoKEGG <- function(listaGenes, longSinGO="?", especie="eco", idConv1=idConv) {
+enriquecimientoKEGG <- function(listaGenes, longSinKEGG="?", especie="eco", idConv1=idConv) {
 #     # Poner esto aqui es una guarrada, pero no voy a buscar otra forma a no ser de que se vaya  ausar mas el script
 #     idConv1 = read.csv(file="datos_cargar/coli_symblBname.txt", sep="\t")
     corte = 0.001
@@ -140,10 +140,13 @@ enriquecimientoKEGG <- function(listaGenes, longSinGO="?", especie="eco", idConv
     }
     
     
-    # Esta funcion olo acepta b numbers de identificador (puede que tambien locus names)
-    salida = enrichKEGG(listaGenes1, organism = especie, pvalueCutoff = 0.05, pAdjustMethod = "fdr", 
-              qvalueCutoff = 0.1, use_internal_data = FALSE)
+    # Esta funcion solo acepta b numbers de identificador (puede que tambien locus names)
+    salida = enrichKEGG(listaGenes1, organism = especie, pvalueCutoff = 1, pAdjustMethod = "fdr", 
+              qvalueCutoff = 1, use_internal_data = FALSE)
     salida = (summary(salida))
+    # Apuntamos los genes que tienen asociacion a algun termino KEGG
+    conKEGG = unique(unlist(strsplit(as.character(salida[,8]), "/")))
+    
     salida = salida[,c("Description", "p.adjust", "qvalue", "GeneRatio", "ID")]
     colnames(salida) = c("Description", "FDR", "qvalue", "GeneRatio", "ID")
     
@@ -158,6 +161,20 @@ enriquecimientoKEGG <- function(listaGenes, longSinGO="?", especie="eco", idConv
         } else {
             salida_list[["KEGG"]] = paste("There weren't FDR corrected values < ", corte, " for any KEGG pathway", sep="")
         }
+    
+    # Vamos a mirar cuantos genes no tienen termino KEGG asociado
+    pos1 = listaGenes1 %in% conKEGG
+     if (especie == "eco") {
+         # OJO!
+         # Este paso puede parecer redundante, pero he visto que dos genes de mi lista (yjeP y mscM) hacian referencia a 
+         # la misma b number. En algun sitio aparecen como el mismo gen, pero estan diferenciados en todos los articulos
+         # de los que he obtenido datos. A falta de mas informacion seguiremos con esta doble conversion
+        pos = idConv1[,"b.number"] %in% listaGenes1[!pos1]
+        longSinKEGG = table(pos)[[2]]
+    } else { # Supongo que de adaptar esto a otras especies tendre mas suerte con los identificadores, sino, se adaptara
+        longSinKEGG = table(pos1)[[2]]
+    }
+    salida_list[["noKEGG"]] = longSinKEGG
     return(salida_list)
 }
 
@@ -233,7 +250,7 @@ enriquecimientoGO <- function(listaGenes) {
             # select the GO terms with adjusted p-value less than the cut off
           
             resultsalida = simplificar(resultsalida, ont, cutoff=0.7, by="FDR", 
-                                     select_fun=min, measure="Rel", organismo = "human")
+                                     select_fun=min, measure="Rel", organismo = "ecolik12")
           
         
             resultsalida <- resultsalida[resultsalida[, "FDR"] < 0.001, ]
@@ -303,11 +320,15 @@ plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE
         # Volvemos a las condiciones por defecto, que si no todos los numeros se muestran asi
         options("scipen"= NULL, "digits"=7)
     } 
-    
+    # Si queremos buscar tambien enriquecimiento en KEGG
     if (kegg == TRUE) {
         # Reducimos los decimales que aparecen para los GO en SOTA
         options("scipen"=-100, "digits"=3)
         salida = enriquecimientoKEGG(rownames(DatosFilt), especie="eco")
+        print("##")
+        print(paste("En este cluster hay ", salida[["noKEGG"]], 
+                    " genes sin terminos KEGG asociados", sep=""))
+        print("##")
         print("############################# KEGG enrichment ######################################")
         print((salida[["KEGG"]]))
         # Volvemos a las condiciones por defecto, que si no todos los numeros se muestran asi
@@ -406,7 +427,7 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
   return(nodos)
 }
 
-# # PAra pruebas
+# # Para pruebas
 # # Al llamar global_SOTA
 # Matriz_filtr = Matriz_6
 # clusters_test = "inicio"
@@ -566,13 +587,13 @@ print(spear)
 boxplot(Matriz_6)
 summary(Matriz_6)
 
-escala = nrow(Matriz_6) / 30
+escala = nrow(Matriz_6) / 10
 # Si queremos que el arbol sea recursivo, reursivo=TRUE
 recursivo=FALSE
 # Si queremos busqueda de GO
 busqueda_go = FALSE
 # Si queremos busqueda de KEGG ################(No consigo desactivarla desde aqui)###############
-busqueda_kegg = FALSE
+busqueda_kegg = TRUE
 
 arbol = global_SOTA(Matriz_6, escala=escala, fin=fin, recursivo=recursivo, go=busqueda_go, kegg=busqueda_kegg)
 ```
