@@ -154,6 +154,80 @@ simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="R
   }
 
 
+idConv=""
+# Buscamos enriquecimineto KEGG
+enriquecimientoKEGG <- function(listaGenes, longSinKEGG="?", especie="otro", idConv1=idConv) {
+#     # Poner esto aqui es una guarrada, pero no voy a buscar otra forma a no ser de que se vaya  ausar mas el script
+#     idConv1 = read.csv(file="datos_cargar/coli_symblBname.txt", sep="\t")
+    corte = 0.001
+    
+    # Convertimos los gene symbol a b numbers en coli
+    if (especie == "eco") {
+        pos = idConv1[,"Input"] %in% listaGenes
+        listaGenes1 = as.character(idConv1[pos, "b.number"])
+        listaGenes1 = unique(listaGenes1)
+    } else { # Supongo que de adaptar esto a otras especies tendre mas suerte con los identificadores, sino, se adaptara
+        listaGenes1 = listaGenes
+    }
+    if (especie == "hsa") {
+        # Cambiamos los IDs a entrez
+        xx1 <- as.list(org.Hs.egALIAS2EG)
+        listaGenes1 = xx1[listaGenes]
+        names(listaGenes1) = NULL
+        listaGenes1 = unlist(listaGenes1)
+        listaGenes1 = unique(listaGenes1)
+    }
+    
+    # Esta funcion solo acepta b numbers de identificador (puede que tambien locus names)
+    salida = enrichKEGG(listaGenes1, organism = especie, pvalueCutoff = 1, pAdjustMethod = "fdr", 
+              qvalueCutoff = 1, use_internal_data = FALSE)
+    salida = (summary(salida))
+    # Apuntamos los genes que tienen asociacion a algun termino KEGG
+    conKEGG = unique(unlist(strsplit(as.character(salida[,8]), "/")))
+    
+    salida = salida[,c("Description", "p.adjust", "qvalue", "GeneRatio", "ID")]
+    colnames(salida) = c("Description", "FDR", "qvalue", "GeneRatio", "ID")
+    
+    # Nos quedamos con los que superen la fdr minima acordada
+    pos = salida[,"FDR"] < corte
+    salida_temp = salida[pos,]
+
+    salida_list = list()
+    # Si no hay resultados, esta parte sobra
+    if(dim(salida_temp)[1] != 0) {
+        salida_list[["KEGG"]] = salida_temp
+        } else {
+            salida_list[["KEGG"]] = paste("There weren't FDR corrected values < ", corte, " for any KEGG pathway", sep="")
+        }
+    
+    # Vamos a mirar cuantos genes no tienen termino KEGG asociado
+    pos1 = listaGenes1 %in% conKEGG
+     if (especie == "eco") {
+         # OJO!
+         # Este paso puede parecer redundante, pero he visto que dos genes de mi lista (yjeP y mscM) hacian referencia a 
+         # la misma b number. En algun sitio aparecen como el mismo gen, pero estan diferenciados en todos los articulos
+         # de los que he obtenido datos. A falta de mas informacion seguiremos con esta doble conversion
+        pos = idConv1[,"b.number"] %in% listaGenes1[!pos1]
+        longSinKEGG = table(pos)[[2]]
+    } else if (especie == "hsa") {
+        # Obtenemos una lista con identificadores en Symbol y entrez, y retransformamos a Symbol nuestra lista de genes
+        entrzSymb = as.list(org.Hs.egSYMBOL)
+        sinKEGG1 = entrzSymb[conKEGG]
+        names(sinKEGG1) = NULL
+        sinKEGG1 = unlist(sinKEGG1)
+        sinKEGG1 = unique(sinKEGG1)
+        # Al parecer un gene Symbol puede tener varios ID de entrez y viceversa, por lo que tenemos esto en cuenta
+        sinKEGG1 = sinKEGG1[sinKEGG1 %in% listaGenes]
+        longSinKEGG = length(sinKEGG1)
+        
+    } else { # Supongo que de adaptar esto a otras especies tendre mas suerte con los identificadores, sino, se adaptara
+        longSinKEGG = table(pos1)[[2]]
+    }
+    salida_list[["noKEGG"]] = longSinKEGG
+    return(salida_list)
+}
+
+
 # Buscamos enriquecimineto GO con Gprofiler
 enriquecimientoGO_Gprofiler <- function(listaGenes, longSinGO="?", filtro="GO", especie="otro") {
     corte = 0.001
@@ -200,7 +274,7 @@ enriquecimientoGO_Gprofiler <- function(listaGenes, longSinGO="?", filtro="GO", 
 
 
 # Funcion para generar el plot
-plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE, valor_silueta) {
+plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE, valor_silueta, kegg = TRUE) {
     eje = 2
     for(i in 1: nrow(DatosFilt)) {
         if(i == 1) {
@@ -251,6 +325,20 @@ plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE
         # Volvemos a las condiciones por defecto, que si no todos los numeros se muestran asi
         options("scipen"= NULL, "digits"=7)
     }
+    # Si queremos buscar tambien enriquecimiento en KEGG
+    if (kegg == TRUE) {
+        # Reducimos los decimales que aparecen para los GO en SOTA
+        options("scipen"=-100, "digits"=3)
+        salida = enriquecimientoKEGG(rownames(DatosFilt), especie="spo")
+        print("##")
+        print(paste("En este cluster hay ", salida[["noKEGG"]], 
+                    " genes sin terminos KEGG asociados", sep=""))
+        print("##")
+        print("############################# KEGG enrichment ######################################")
+        print((salida[["KEGG"]]))
+        # Volvemos a las condiciones por defecto, que si no todos los numeros se muestran asi
+        options("scipen"= NULL, "digits"=7)
+    }
 }
 
 
@@ -283,7 +371,7 @@ SOTA <- function(Matriz_6, ciclos, escala, recursivo=FALSE) {
 
 
 # Funcion para realizar todo el analisis con sota y generar plots de clusters no demasiado grandes
-global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c(), record_silueta = "Silueta", recursivo=TRUE, go=TRUE) {
+global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c(), record_silueta = "Silueta", recursivo = TRUE, go=  TRUE, kegg = TRUE) {
     if(clu_comp != "") {
         # Si en algun momento hay que acelerar el proceso esto hay q moverlo
         dir.create(file.path(paste(dir, "/salida", fin, sep="")), showWarnings = FALSE)
@@ -296,7 +384,7 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
             pos = s.sota$clust == clu
             DatosFilt = Matriz_6[pos,]
             valor_silueta = record_silueta[as.numeric(clu)]
-            plotear(DatosFilt, clu, clu_comp, go=go, valor_silueta=valor_silueta)
+            plotear(DatosFilt, clu, clu_comp, go=go, valor_silueta=valor_silueta, kegg=kegg)
             nodos = append(nodos, paste(as.character(clu_comp), ".", as.character(clu), sep = ""))
         }
         ## Vamos a dividir los clusters mas grandes
@@ -338,7 +426,7 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
           }
           nodos = global_SOTA(Matriz_filtr, lista_sota[["clusters_test"]], lista_sota[["reanalizar"]], lista_sota[["sota"]], 
                               escala = escala, clu_comp = clu_comp2, fin=fin, nodos=nodos, record_silueta = record_silueta1,
-                              recursivo=recursivo, go=go)
+                              recursivo=recursivo, go=go, kegg=kegg)
         }
     }
   return(nodos)
@@ -503,13 +591,15 @@ print(spear)
 boxplot(Matriz_6)
 summary(Matriz_6)
 
-escala = nrow(Matriz_6) / 30
+escala = nrow(Matriz_6) / 10
 # Si queremos que el arbol sea recursivo, reursivo=TRUE
 recursivo=FALSE
 # Si queremos busqueda de GO
-busqueda_go = TRUE
+busqueda_go = FALSE
+# Si queremos busqueda de KEGG 
+busqueda_kegg = TRUE
 
-arbol = global_SOTA(Matriz_6, escala = escala, fin=fin, recursivo=recursivo, go=busqueda_go)
+arbol = global_SOTA(Matriz_6, escala = escala, fin=fin, recursivo=recursivo, go=busqueda_go, kegg=busqueda_kegg)
 ```
 
 # Arbol de los clusters generados con mas de 10 genes
