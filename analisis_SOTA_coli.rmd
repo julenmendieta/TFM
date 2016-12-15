@@ -124,7 +124,7 @@ simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="R
 # Me he descargado de http://www.ecogene.org/?q=ecodownload/crossref los b.numbers asociados a todos mis genes
 idConv = read.csv(file="datos_cargar/coli_symblBname.txt", sep="\t")
 
-# Buscamos enriquecimineto GO con Gprofiler
+# Buscamos enriquecimineto KEGG
 enriquecimientoKEGG <- function(listaGenes, longSinKEGG="?", especie="eco", idConv1=idConv) {
 #     # Poner esto aqui es una guarrada, pero no voy a buscar otra forma a no ser de que se vaya  ausar mas el script
 #     idConv1 = read.csv(file="datos_cargar/coli_symblBname.txt", sep="\t")
@@ -421,7 +421,7 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
           }
           nodos = global_SOTA(Matriz_filtr, lista_sota[["clusters_test"]], lista_sota[["reanalizar"]], lista_sota[["sota"]], 
                               escala = escala, clu_comp = clu_comp2, fin=fin, nodos=nodos, record_silueta = record_silueta1,
-                              recursivo=recursivo, go=go)
+                              recursivo=recursivo, go=go, kegg=kegg)
         }
     }
   return(nodos)
