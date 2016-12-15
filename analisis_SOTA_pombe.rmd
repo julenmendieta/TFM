@@ -147,6 +147,9 @@ simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="R
     
     # Incluimos los GOID que habiamos retirado por no tener represnetacion en cerevisiae
     x = rbind(x, apartar)
+    # reordenamos por FDR
+    x = x[with(x, order(FDR)), ]
+
     return(x)
   }
 
