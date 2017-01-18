@@ -17,6 +17,7 @@ library("tidyr")
 library("clValid")
 library("clusterProfiler")
 library("openxlsx")
+library("gProfileR")
 
 ############################################### Funciones ######################################################
 # Funcion para generar el plot
@@ -46,7 +47,12 @@ plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE
     plotear(DatosFilt, clu, clu_comp, ran1 = 0.35, ran2 = 0.65, go = FALSE, seguir = FALSE)
   }
   if (go == TRUE) {
-    salida = enriquecimientoGO(rownames(DatosFilt), fin)
+    if (fin == "_pombe") {
+        salida = enriquecimientoGO_Gprofiler(rownames(DatosFilt), especie="spombe")
+    } else {
+        salida = enriquecimientoGO(rownames(DatosFilt), fin)
+    }
+    
     # Reducimos los decimales que aparecen para los GO en SOTA
     # options("scipen"=-100, "digits"=3)
 #     for (nom in names(salida)) {
@@ -67,6 +73,53 @@ plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE
     write.xlsx(salida, file = paste(dir1, "/salida_GO/", "Cluster", "_", clu_comp, ".", as.character(clu), 
                                       "_", ... = nrow(DatosFilt), "_genes.xlsx", sep=""))
   }
+}
+
+
+# Funcion para eliminar GO solapantes por similitud lexica (0.7)
+simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro") {
+    ## to satisfy codetools for calling gather
+    # Con esto indicamos la similitud entre cada GO
+    go1 <- go2 <- similarity <- NULL
+    
+    ID = paste("GO", ont, "ID", sep="")
+    rownames(x) = x[,ID]
+    
+    
+    sim <- mgoSim(x[,ID], x[,ID],
+                  ont=ont,
+                  organism=organismo,
+                  measure=measure,
+                  combine=NULL)
+    
+    sim.df <- as.data.frame(sim)
+    sim.df$go1 <- row.names(sim.df)
+    sim.df <- gather(sim.df, go2, similarity, -go1)
+    
+    sim.df <- sim.df[!is.na(sim.df$similarity),]
+    
+    ## feature 'by' is attached to 'go1'
+    sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
+    sim.df$go2 <- as.character(sim.df$go2)
+    
+    ID2 <- x[,ID]
+    
+    GO_to_remove <- character()
+    for (i in seq_along(ID2)) {
+        ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
+        ## if length(ii) == 1, then go1 == go2
+        if (length(ii) < 2) 
+            next
+        
+        sim_subset <- sim.df[ii,]
+        
+        jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
+        
+        ## sim.df <- sim.df[-ii[-jj]]
+        GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
+    }
+    x <- x[!(x[,ID] %in% GO_to_remove),]
+    return(x)
 }
 
 
@@ -152,50 +205,125 @@ enriquecimientoGO <- function(listaGenes, fin) {
 
 
 # Funcion para eliminar GO solapantes por similitud lexica (0.7)
-simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro") {
-      ## to satisfy codetools for calling gather
-      # Con esto indicamos la similitud entre cada GO
-      go1 <- go2 <- similarity <- NULL
-      
-      ID = paste("GO", ont, "ID", sep="")
-      rownames(x) = x[,ID]
-      
-      
-      sim <- mgoSim(x[,ID], x[,ID],
-                    ont=ont,
-                    organism=organismo,
-                    measure=measure,
-                    combine=NULL)
-      
-      sim.df <- as.data.frame(sim)
-      sim.df$go1 <- row.names(sim.df)
-      sim.df <- gather(sim.df, go2, similarity, -go1)
-      
-      sim.df <- sim.df[!is.na(sim.df$similarity),]
-      
-      ## feature 'by' is attached to 'go1'
-      sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
-      sim.df$go2 <- as.character(sim.df$go2)
-      
-      ID2 <- x[,ID]
-      
-      GO_to_remove <- character()
-      for (i in seq_along(ID2)) {
-          ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
-          ## if length(ii) == 1, then go1 == go2
-          if (length(ii) < 2) 
-              next
-          
-          sim_subset <- sim.df[ii,]
-          
-          jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
-          
-          ## sim.df <- sim.df[-ii[-jj]]
-          GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
-      }
-      x <- x[!(x[,ID] %in% GO_to_remove),]
-      return(x)
+simplificarPombe <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro", ID="") {
+    ## to satisfy codetools for calling gather
+    # Con esto indicamos la similitud entre cada GO
+    go1 <- go2 <- similarity <- NULL
+    if (ID == "") {
+        ID = paste("GO", ont, "ID", sep="")
+    }
+    rownames(x) = x[,ID]
+    
+    # Si queremos evitar el truco de usar info de Cerevisiae, pruebas aqui
+    # Primero hay que preparar el GO data
+    # godata(OrgDb = NULL, keytype = "ENTREZID", ont, computeIC = TRUE)
+    ## otro
+    # d <- semData('MeSH.Spo.972h.eg.db', ont=ont)
+    # goSim("heterocycle metabolic process", "heterocycle biosynthetic process", semData, measure = "Wang")
+    
+    # Esto es de otro paquete GOSim
+    # a= getTermSim(x[,"term.name"], method = "relevance", verbose = FALSE)
+    
+    # Miramos cuantos de los GO de nuestra lista no estan presente en cerevisiae
+    GO_cerev <- as.list(org.Sc.sgdGO)
+    names(GO_cerev) = NULL
+    GO_cerev = GO_cerev[!is.na(GO_cerev)]
+    GO_cerev = unlist(GO_cerev)
+    names(GO_cerev) = NULL
+    GO_cerev = grep("GO:", GO_cerev, value = TRUE)
+    GO_cerev = unique(GO_cerev)
+    pos = x[,ID] %in% GO_cerev
+    # Guardamos los que no estan en cerevisiae para luego, y los eliminamos de ID
+    apartar = x[!pos,]
+    x = x[pos,]
+    
+    sim <- mgoSim(x[,ID], x[,ID],
+                  ont=ont,
+                  organism=organismo,
+                  measure=measure,
+                  combine=NULL)
+    
+    sim.df <- as.data.frame(sim)
+    sim.df$go1 <- row.names(sim.df)
+    sim.df <- gather(sim.df, go2, similarity, -go1)
+    
+    sim.df <- sim.df[!is.na(sim.df$similarity),]
+    
+    ## feature 'by' is attached to 'go1'
+    sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
+    sim.df$go2 <- as.character(sim.df$go2)
+    
+    ID2 <- x[,ID]
+    
+    GO_to_remove <- character()
+    for (i in seq_along(ID2)) {
+        ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
+        ## if length(ii) == 1, then go1 == go2
+        if (length(ii) < 2) 
+            next
+        
+        sim_subset <- sim.df[ii,]
+        
+        jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
+        
+        ## sim.df <- sim.df[-ii[-jj]]
+        GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
+    }
+    x <- x[!(x[,ID] %in% GO_to_remove),]
+    
+    # Incluimos los GOID que habiamos retirado por no tener represnetacion en cerevisiae
+    x = rbind(x, apartar)
+    # reordenamos por FDR
+    x = x[with(x, order(FDR)), ]
+    
+    return(x)
 }
+
+
+# Buscamos enriquecimineto GO con Gprofiler
+enriquecimientoGO_Gprofiler <- function(listaGenes, longSinGO="?", filtro="GO", especie="otro") {
+    corte = 0.001
+    # Buscamos asociacion a terminos GO, y corregimos por FDR
+    resultado <- gprofiler(listaGenes,organism = especie, significant = F, correction_method = "fdr", 
+                           src_filter = filtro, max_p_value="0.05")
+    # Nos quedamos solo con las columnas que nos interesan, y cambiamos la de p.value por el metodo de correccion
+    resultado = resultado[,c("term.name", "p.value", "term.id", "domain")]
+    colnames(resultado) = c("Term", "FDR", "term.id", "domain")
+    
+    
+    salida = list()
+    ontologies = c("BP", "CC")
+    for(ont in ontologies) {
+        # Guardamos en una variable a parte los GO asociados a este GO
+        pos = resultado[,"domain"] == ont
+        resultado_temp = resultado[pos,]
+        resultado_temp[,"domain"] = NULL
+        # Si no hay resultados, esta parte sobra
+        if(dim(resultado_temp)[1] != 0) {
+            ## Lo de simplificar no hay para pombe, por lo que utilizamos cerevisiae
+            ############# OJO ---> YEAST = CEREVISIAE ##########################################################  
+            resultado_temp = simplificarPombe(resultado_temp, ont, cutoff=0.7, by="FDR", 
+                                         select_fun=min, measure="Rel", organismo = "yeast", ID="term.id")
+            ####################################################################################################
+            
+            
+            # Filtramos por el valor minimo indicado al inicio de la funcion
+            pos = resultado_temp[,"FDR"] < corte
+            resultado_temp = resultado_temp[pos,]
+            
+            if (nrow(resultado_temp) == 0) {
+                salida[[ont]] = "No summarized results with FDR < 0.001"
+            } else {
+                salida[[ont]] = resultado_temp
+            }
+        } else {
+            salida[[ont]] = "There weren't FDR corrected values < 0.05 before GO summary"
+        }
+    }
+    salida[["noGO"]] = longSinGO
+    return(salida)
+}
+
 
 # Funcion para generar silueta y lanzar las funciones para generar plot y guardar GOs
 selecClusters <- function(div_clusters1, dir1, grupos1, go=TRUE, fin) {
@@ -303,20 +431,30 @@ juntarFicheros <- function (dir1, div_clusters, grupos) {
 # quince = c(8,13,14,11,9,10)
 # veinte = c(14,15,NA,NA,NA,NA)
 # treinta = c(30,31,16,17,NA,NA)
-
+# 
 # dir1 = "/media/julen/TOSHIBA_EXT/datos/paper/levadura"
 # fin = "_levadura"
 # fich_salida = "Selección_clusters_levadura.pdf"
 
-# HeLa
-diez = c(5,8,9,10,NA,NA,NA,NA,NA,NA,NA,NA)
-quince = c(13,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA)
-veinte = c(6,12,13,16,17,20,21,NA,NA,NA,NA,NA)
-treinta = c(12,13,14,15,20,21,22,23,24,25,26,27)
+# # HeLa
+# diez = c(5,8,9,10,NA,NA,NA,NA,NA,NA,NA,NA)
+# quince = c(13,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA,NA)
+# veinte = c(6,12,13,16,17,20,21,NA,NA,NA,NA,NA)
+# treinta = c(12,13,14,15,20,21,22,23,24,25,26,27)
+# 
+# dir1 = "/media/julen/TOSHIBA_EXT/datos/paper/HeLa"
+# fin = "_HeLa"
+# fich_salida = "Selección_clusters_HeLa.pdf"
 
-dir1 = "/media/julen/TOSHIBA_EXT/datos/paper/HeLa"
-fin = "_HeLa"
-fich_salida = "Selección_clusters_HeLa.pdf"
+# Pombe
+diez = c(3,5,6,7,9,11)
+quince = c(9,10,11,13,15,16)
+veinte = c(16,17,18,19,20,21)
+treinta = c(NA,NA,NA,NA,NA,NA)
+
+dir1 = "/media/julen/TOSHIBA_EXT/datos/paper/pombe"
+fin = "_pombe"
+fich_salida = "Selección_clusters_pombe.pdf"
 
 
 ### Parte fija  ###
@@ -334,7 +472,7 @@ dir.create(file.path(paste(dir1, "/salida_GO", sep="")), showWarnings = FALSE)
 # Lanzamos el programa
 pdf(fich_salida)
 par(mfrow=c(2,2))
-selecClusters(div_clusters, dir1, grupos, go=FALSE, fin)
+selecClusters(div_clusters, dir1, grupos, go=TRUE, fin)
 dev.off()
 
 

@@ -78,20 +78,26 @@ library("tidyr")
 ################################################# Funciones  ##########################################################
 
 # Funcion para eliminar GO solapantes por similitud lexica (0.7)
-simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro") {
+simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro", semData) {
     ## to satisfy codetools for calling gather
     # Con esto indicamos la similitud entre cada GO
     go1 <- go2 <- similarity <- NULL
 
+    # Arreglo para la actualizacion de mgoSim
+    if (ont == "BP") {
+      semData1 = semData[[1]]
+    } else if (ont == "CC") {
+      semData1 = semData[[2]]
+    }
+    
     ID = paste("GO", ont, "ID", sep="")
     rownames(x) = x[,ID]
 
 
     sim <- mgoSim(x[,ID], x[,ID],
-            ont=ont,
-            organism=organismo,
-            measure=measure,
-            combine=NULL)
+                semData=semData1,
+                measure=measure,
+                combine=NULL)
 
     sim.df <- as.data.frame(sim)
     sim.df$go1 <- row.names(sim.df)
@@ -198,7 +204,7 @@ enriquecimientoKEGG <- function(listaGenes, longSinKEGG="?", especie="otro", idC
 
 
 # Enriquecimineto GO
-enriquecimientoGO <- function(listaGenes) {
+enriquecimientoGO <- function(listaGenes, semData) {
     # Cambiamos los IDs a entrez
     xx1 <- as.list(org.EcK12.egALIAS2EG)
     listaGenes1 = xx1[listaGenes]
@@ -268,7 +274,7 @@ enriquecimientoGO <- function(listaGenes) {
             # select the GO terms with adjusted p-value less than the cut off
           
             resultsalida = simplificar(resultsalida, ont, cutoff=0.7, by="FDR", 
-                                     select_fun=min, measure="Rel", organismo = "ecolik12")
+                                     select_fun=min, measure="Rel", organismo = "ecolik12", semData=semData)
           
         
             resultsalida <- resultsalida[resultsalida[, "FDR"] < 0.001, ]
@@ -287,7 +293,8 @@ enriquecimientoGO <- function(listaGenes) {
 
 
 # Funcion para generar el plot
-plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE, valor_silueta, kegg = TRUE) {
+plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE, valor_silueta, 
+                    kegg = TRUE, semData="") {
     eje = 2
     for(i in 1: nrow(DatosFilt)) {
         if(i == 1) {
@@ -313,7 +320,7 @@ plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE
         plotear(DatosFilt, clu, clu_comp, ran1 = 0.35, ran2 = 0.65, go = FALSE, seguir = FALSE)
     }
     if (go == TRUE) {
-        salida = enriquecimientoGO(rownames(DatosFilt))
+        salida = enriquecimientoGO(rownames(DatosFilt), semData=semData)
         # Reducimos los decimales que aparecen para los GO en SOTA
         options("scipen"=-100, "digits"=3)
         print("##")
@@ -384,7 +391,7 @@ SOTA <- function(Matriz_6, ciclos, escala, recursivo=FALSE) {
 
 
 # Funcion para realizar todo el analisis con sota y generar plots de clusters no demasiado grandes
-global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c(), record_silueta = "Silueta", recursivo=TRUE, go = TRUE, kegg = TRUE) {
+global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos=c(), record_silueta = "Silueta", recursivo=TRUE, go = TRUE, kegg = TRUE, semData = "") {
     if(clu_comp != "") {
         # Si en algun momento hay que acelerar el proceso esto hay q moverlo
         dir.create(file.path(paste(dir, "/salida", fin, sep="")), showWarnings = FALSE)
@@ -397,7 +404,7 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
             pos = s.sota$clust == clu
             DatosFilt = Matriz_6[pos,]
             valor_silueta = record_silueta[as.numeric(clu)]
-            plotear(DatosFilt, clu, clu_comp, go=go, valor_silueta=valor_silueta, kegg=kegg)
+            plotear(DatosFilt, clu, clu_comp, go=go, valor_silueta=valor_silueta, kegg=kegg, semData=semData)
             nodos = append(nodos, paste(as.character(clu_comp), ".", as.character(clu), sep = ""))
         }
         ## Vamos a dividir los clusters mas grandes
@@ -439,7 +446,7 @@ global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio
           }
           nodos = global_SOTA(Matriz_filtr, lista_sota[["clusters_test"]], lista_sota[["reanalizar"]], lista_sota[["sota"]], 
                               escala = escala, clu_comp = clu_comp2, fin=fin, nodos=nodos, record_silueta = record_silueta1,
-                              recursivo=recursivo, go=go, kegg=kegg)
+                              recursivo=recursivo, go=go, kegg=kegg, semData=semData)
         }
     }
   return(nodos)
@@ -592,8 +599,12 @@ options(width = 100)
 pear = round(cor(matriz, use="pairwise.complete.obs", method = "pearson"), 3)
 spear = round(cor(matriz, use="pairwise.complete.obs", method = "spearman"), 3)
 
-# Juntamos las matrices de correlacion
+# Han actualizado el paquete de mgoSim
+semDataBP <- godata('org.EcK12.eg.db', ont="BP")
+semDataCC <- godata('org.EcK12.eg.db', ont="CC")
+semData = list(semDataBP, semDataCC)
 
+# Juntamos las matrices de correlacion
 for (c in 1:(ncol(matriz) - 1)) {
     for (c2 in (c + 1):ncol(matriz)) {
         spear[c, c2] = pear[c, c2]
@@ -613,7 +624,7 @@ busqueda_go = FALSE
 # Si queremos busqueda de KEGG ################(No consigo desactivarla desde aqui)###############
 busqueda_kegg = TRUE
 
-arbol = global_SOTA(Matriz_6, escala=escala, fin=fin, recursivo=recursivo, go=busqueda_go, kegg=busqueda_kegg)
+arbol = global_SOTA(Matriz_6, escala=escala, fin=fin, recursivo=recursivo, go=busqueda_go, kegg=busqueda_kegg, semData=semData)
 ```
 
 # Arbol de los clusters generados con mas de 10 genes

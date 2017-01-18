@@ -1,0 +1,553 @@
+---
+title: "SOTA reanalisis"
+output: pdf_document
+---
+
+```{r echo=FALSE, message = FALSE, include = FALSE}
+## dividir_clusters.rmd
+## 2017-01-13 julenmendieta92@gmail.com
+##1-Abrir los objetos de SOTA que se indique y volver a generar clusters
+
+
+############################################### Librerias  ########################################################
+library("GO.db")
+library("topGO")
+library("GOstats")
+library("biomaRt")
+library("org.Sc.sgd.db")
+library("org.Hs.eg.db")
+library("GOSemSim")
+library("tidyr")
+library("clValid")
+library("clusterProfiler")
+library("openxlsx")
+library("gProfileR")
+
+############################################### Funciones ######################################################
+# Funcion para eliminar GO solapantes por similitud lexica (0.7)
+simplificar <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro", semData) {
+  ## to satisfy codetools for calling gather
+  # Con esto indicamos la similitud entre cada GO
+  go1 <- go2 <- similarity <- NULL
+  
+  # Arreglo para la actualizacion de mgoSim
+  if (ont == "BP") {
+    semData1 = semData[[1]]
+  } else if (ont == "CC") {
+    semData1 = semData[[2]]
+  }
+  
+  ID = paste("GO", ont, "ID", sep="")
+  rownames(x) = x[,ID]
+  
+  sim <- mgoSim(x[,ID], x[,ID],
+                semData=semData1,
+                measure=measure,
+                combine=NULL)
+  
+  sim.df <- as.data.frame(sim)
+  sim.df$go1 <- row.names(sim.df)
+  sim.df <- gather(sim.df, go2, similarity, -go1)
+  
+  sim.df <- sim.df[!is.na(sim.df$similarity),]
+  
+  ## feature 'by' is attached to 'go1'
+  sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
+  sim.df$go2 <- as.character(sim.df$go2)
+  
+  ID2 <- x[,ID]
+  
+  GO_to_remove <- character()
+  for (i in seq_along(ID2)) {
+    ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
+    ## if length(ii) == 1, then go1 == go2
+    if (length(ii) < 2) 
+      next
+    
+    sim_subset <- sim.df[ii,]
+    
+    jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
+    
+    ## sim.df <- sim.df[-ii[-jj]]
+    GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
+  }
+  x <- x[!(x[,ID] %in% GO_to_remove),]
+  return(x)
+}
+
+
+# Enriquecimineto GO
+enriquecimientoGO <- function(listaGenes, fin, semData) {
+  ontologies = c("BP", "CC")
+  if (fin == "_levadura") {
+    orfId <- org.Sc.sgdGO
+    anotacion = "org.Sc.sgd"
+    especie = "yeast"
+  
+    universe <- mappedkeys(orfId)
+    catego1 <- as.character(listaGenes)
+    # Apuntamos cuantos genes de nuestro cluster no tinene GO asociados
+    pos = !(listaGenes %in% universe)
+    longSinGO = sum(pos)
+  } else if (fin == "_HeLa") {
+    orfId <- org.Hs.egGO
+    anotacion = "org.Hs.eg"
+    especie = "human"
+    
+    # Cambiamos los IDs a entrez
+    xx1 <- as.list(org.Hs.egALIAS2EG)
+    listaGenes1 = xx1[listaGenes]
+    names(listaGenes1) = NULL
+    catego1 = unlist(listaGenes1)
+    catego1 = unique(catego1)
+    
+    # Guardamos una lista con todos los genes que tienen GO asociados
+    orfId <- org.Hs.egGO
+    conGO <- mappedkeys(orfId)
+    # Guardamos una lista con todos los genes
+    universe <- xx1
+    names(universe) = NULL
+    universe = unlist(universe)
+    universe = unique(universe)
+    
+  }
+  
+  
+  salida = list()
+  for(ont in ontologies) {
+    params <- new("GOHyperGParams" , geneIds = catego1,
+                  universeGeneIds = universe , ontology = ont , pvalueCutoff =0.001,
+                  conditional =F , testDirection = "over" , annotation = anotacion)
+    hgOver <- hyperGTest(params)
+    
+    
+    ## Ajustamos el p-valor con FDR
+    # Get the p-values of the test
+    hgOver.pv <- pvalues(hgOver)
+    # Adjust p-values for multiple test (FDR)
+    hgOver.pv.fdr <- p.adjust(hgOver.pv,'fdr')
+    # Guardamos los valores del FDR en el objeto de resultados
+    result <- summary(hgOver)
+    # Si no hay resultados, esta parte sobra
+    if(dim(result)[1] != 0) {
+      longi = dim(result)[1]
+      FDR = hgOver.pv.fdr[1 : longi]
+      names(FDR) = NULL
+      result["FDR"] <- FDR
+      if(ont == "BP") {
+        resultsalida <- result[, c("Term", "FDR", "GOBPID")]
+      } else {
+        resultsalida <- result[, c("Term", "FDR", "GOCCID")]
+      }
+      # select the GO terms with adjusted p-value less than the cut off
+      
+      resultsalida = simplificar(resultsalida, ont, cutoff=0.7, by="FDR",
+                                 select_fun=min, measure="Rel", organismo = especie, semData=semData)
+      
+      
+      resultsalida <- resultsalida[resultsalida[, "FDR"] < 0.001, ]
+      if (nrow(resultsalida) == 0) {
+        salida[[ont]] = "No summarized results with FDR < 0.001"
+      } else {
+        salida[[ont]] = resultsalida
+      }
+    } else {
+      salida[[ont]] = "There weren't adjusted p values < 0.001 before GO summary"
+    }
+  }
+  salida[["noGO"]] = longSinGO
+  return(salida)
+}
+
+
+# Funcion para eliminar GO solapantes por similitud lexica (0.7)
+simplificarPombe <- function(x, ont, cutoff=0.7, by="FDR", select_fun=min, measure="Rel", organismo = "otro", ID="") {
+  ## to satisfy codetools for calling gather
+  # Con esto indicamos la similitud entre cada GO
+  go1 <- go2 <- similarity <- NULL
+  if (ID == "") {
+    ID = paste("GO", ont, "ID", sep="")
+  }
+  rownames(x) = x[,ID]
+  
+  # Si queremos evitar el truco de usar info de Cerevisiae, pruebas aqui
+  # Primero hay que preparar el GO data
+  # godata(OrgDb = NULL, keytype = "ENTREZID", ont, computeIC = TRUE)
+  ## otro
+  # d <- semData('MeSH.Spo.972h.eg.db', ont=ont)
+  # goSim("heterocycle metabolic process", "heterocycle biosynthetic process", semData, measure = "Wang")
+  
+  # Esto es de otro paquete GOSim
+  # a= getTermSim(x[,"term.name"], method = "relevance", verbose = FALSE)
+  
+  # Miramos cuantos de los GO de nuestra lista no estan presente en cerevisiae
+  GO_cerev <- as.list(org.Sc.sgdGO)
+  names(GO_cerev) = NULL
+  GO_cerev = GO_cerev[!is.na(GO_cerev)]
+  GO_cerev = unlist(GO_cerev)
+  names(GO_cerev) = NULL
+  GO_cerev = grep("GO:", GO_cerev, value = TRUE)
+  GO_cerev = unique(GO_cerev)
+  pos = x[,ID] %in% GO_cerev
+  # Guardamos los que no estan en cerevisiae para luego, y los eliminamos de ID
+  apartar = x[!pos,]
+  x = x[pos,]
+  
+  sim <- mgoSim(x[,ID], x[,ID],
+                ont=ont,
+                organism=organismo,
+                measure=measure,
+                combine=NULL)
+  
+  sim.df <- as.data.frame(sim)
+  sim.df$go1 <- row.names(sim.df)
+  sim.df <- gather(sim.df, go2, similarity, -go1)
+  
+  sim.df <- sim.df[!is.na(sim.df$similarity),]
+  
+  ## feature 'by' is attached to 'go1'
+  sim.df <- merge(sim.df, x[, c(ID, by)], by.x="go1", by.y=ID)
+  sim.df$go2 <- as.character(sim.df$go2)
+  
+  ID2 <- x[,ID]
+  
+  GO_to_remove <- character()
+  for (i in seq_along(ID2)) {
+    ii <- which(sim.df$go2 == ID2[i] & sim.df$similarity > cutoff)
+    ## if length(ii) == 1, then go1 == go2
+    if (length(ii) < 2) 
+      next
+    
+    sim_subset <- sim.df[ii,]
+    
+    jj <- which(sim_subset[, by] == select_fun(sim_subset[, by]))
+    
+    ## sim.df <- sim.df[-ii[-jj]]
+    GO_to_remove <- c(GO_to_remove, sim_subset$go1[-jj]) %>% unique
+  }
+  x <- x[!(x[,ID] %in% GO_to_remove),]
+  
+  # Incluimos los GOID que habiamos retirado por no tener represnetacion en cerevisiae
+  x = rbind(x, apartar)
+  # reordenamos por FDR
+  x = x[with(x, order(FDR)), ]
+  
+  return(x)
+}
+
+
+# Buscamos enriquecimineto GO con Gprofiler
+enriquecimientoGO_Gprofiler <- function(listaGenes, longSinGO="?", filtro="GO", especie="otro") {
+  corte = 0.001
+  # Buscamos asociacion a terminos GO, y corregimos por FDR
+  resultado <- gprofiler(listaGenes,organism = especie, significant = F, correction_method = "fdr", 
+                         src_filter = filtro, max_p_value="0.05")
+  # Nos quedamos solo con las columnas que nos interesan, y cambiamos la de p.value por el metodo de correccion
+  resultado = resultado[,c("term.name", "p.value", "term.id", "domain")]
+  colnames(resultado) = c("Term", "FDR", "term.id", "domain")
+  
+  
+  salida = list()
+  ontologies = c("BP", "CC")
+  for(ont in ontologies) {
+    # Guardamos en una variable a parte los GO asociados a este GO
+    pos = resultado[,"domain"] == ont
+    resultado_temp = resultado[pos,]
+    resultado_temp[,"domain"] = NULL
+    # Si no hay resultados, esta parte sobra
+    if(dim(resultado_temp)[1] != 0) {
+      ## Lo de simplificar no hay para pombe, por lo que utilizamos cerevisiae
+      ############# OJO ---> YEAST = CEREVISIAE ##########################################################  
+      resultado_temp = simplificarPombe(resultado_temp, ont, cutoff=0.7, by="FDR", 
+                                        select_fun=min, measure="Rel", organismo = "yeast", ID="term.id")
+      ####################################################################################################
+      
+      
+      # Filtramos por el valor minimo indicado al inicio de la funcion
+      pos = resultado_temp[,"FDR"] < corte
+      resultado_temp = resultado_temp[pos,]
+      
+      if (nrow(resultado_temp) == 0) {
+        salida[[ont]] = "No summarized results with FDR < 0.001"
+      } else {
+        salida[[ont]] = resultado_temp
+      }
+    } else {
+      salida[[ont]] = "There weren't FDR corrected values < 0.05 before GO summary"
+    }
+  }
+  salida[["noGO"]] = longSinGO
+  return(salida)
+}
+
+
+# Funcion para generar el plot
+plotear <- function(DatosFilt, clu, clu_comp, ran1 = -0.1, ran2 = 1.1, go = TRUE, seguir = TRUE, valor_silueta, dir1=".", 
+                    fin, kegg = kegg, semData="") {
+  eje = 1 # Esto es el tamanyo de las letras de la abcisa X
+  for(i in 1: nrow(DatosFilt)) {
+    if(i == 1) {
+      plot(DatosFilt[1 ,], type ="l", col ="grey", ylim = range(c(ran1 ,ran2)),
+           axes = FALSE , xaxt ="n", xlab ="", ylab ="")
+      axis(1 , at =1:6 , labels = colnames(DatosFilt),
+           cex.axis = eje)
+    } else {
+      par(new = TRUE)
+      plot(DatosFilt[i ,] , type ="l", col ="grey", ylim = range(c(ran1 ,ran2)) ,
+           axes = FALSE , xlab ="", ylab ="")
+    }
+  }
+  par(new = TRUE)
+  plot(apply(DatosFilt, 2, mean), type ="l", ylim = range(c( ran1 ,ran2)), xaxt = "n", 
+       xlab ="Variables", ylab ="PromedioCluster", 
+       main = paste("Cluster", "_", clu_comp, ".", as.character(clu), "_", nrow(DatosFilt), "_genes", sep =""),
+       cex.axis = eje, sub=valor_silueta)
+  lines(y = apply(DatosFilt[,1:3], 2, mean), x = c(1,2,3), col="blue", lwd=2)
+  lines(y = apply(DatosFilt[,3:6], 2, mean), x = c(3,4,5,6), col="red", lwd=2)
+  
+  if ((min(DatosFilt) >= 0.35) & (max(DatosFilt) <= 0.65) & (seguir == TRUE)) {
+    plotear(DatosFilt, clu, clu_comp, ran1 = 0.35, ran2 = 0.65, go = FALSE, seguir = FALSE)
+  }
+  if (go == TRUE) {
+    if (fin == "_pombe") {
+      salida = enriquecimientoGO_Gprofiler(rownames(DatosFilt), especie="spombe")
+    } else {
+      salida = enriquecimientoGO(rownames(DatosFilt), fin, semData=semData)
+    }
+    # Reducimos los decimales que aparecen para los GO en SOTA
+    options("scipen"=-100, "digits"=3)
+    print("##")
+    print(paste("En este cluster hay ", salida[["noGO"]], 
+                " genes sin terminos GO asociados (de cualquier subontologia)", sep=""))
+    print("##")
+    for (nom in names(salida)) {
+            # Reducimos la longitud del nombre del GO si es demasiado largo
+            if (length(salida[[nom]]) > 1) {
+            for (c in 1:nrow(salida[[nom]])){
+                if (nchar(salida[[nom]][c, "Term"]) > 74) {
+                    salida[[nom]][c, "Term"] = paste(substr(salida[[nom]][c, "Term"], 1, 74), "...", sep = "")
+                }
+            }
+          }
+            if (nom != "noGO") {
+                print(paste("#############################", nom, "######################################"))
+                print(as.data.frame(salida[nom]), row.names = FALSE)
+            }
+          
+        }
+    # Volvemos a las condiciones por defecto, que si no todos los numeros se muestran asi
+    options("scipen"= NULL, "digits"=7)
+    # Guardamos en un fichero las GO
+    # write.xlsx(salida, file = paste(dir1, "/reanalisis/", "Cluster", "_", clu_comp, ".", as.character(clu),
+                                    # "_", ... = nrow(DatosFilt), "_genes.xlsx", sep=""))
+  }
+  # Si queremos buscar tambien enriquecimiento en KEGG
+  if (kegg == TRUE) {
+      # Reducimos los decimales que aparecen para los GO en SOTA
+      options("scipen"=-100, "digits"=3)
+      salida = enriquecimientoKEGG(rownames(DatosFilt), especie="sce")
+      print("##")
+      print(paste("En este cluster hay ", salida[["noKEGG"]], 
+                  " genes sin terminos KEGG asociados", sep=""))
+      print("##")
+      print("############################# KEGG enrichment ######################################")
+      print((salida[["KEGG"]]))
+      # Volvemos a las condiciones por defecto, que si no todos los numeros se muestran asi
+      options("scipen"= NULL, "digits"=7)
+  }
+}
+
+
+# Funcion para lanzar el sota con una matriz de genes y devolver parametros de interes
+SOTA <- function(Matriz_6, ciclos, escala, recursivo=FALSE) {
+    # He visto que se puede dar un error al hacer el sota, que se arregla al modificar los ciclos
+    s.sota=0
+    suppressWarnings((s.sota = sota(Matriz_6, maxCycles = ciclos, maxEpochs = 1000, distance = "euclidean", wcell = 0.01, 
+                pcell = 0.005, scell = 0.001, delta = 1e-04, neighb.level = 0, 
+                maxDiversity = 0.9, unrest.growth = TRUE)))
+    if (class(s.sota) != "sota") {
+        s.sota = sota(Matriz_6, maxCycles = (ciclos - 1), maxEpochs = 1000, distance = "euclidean", wcell = 0.01, 
+                pcell = 0.005, scell = 0.001, delta = 1e-04, neighb.level = 0, 
+                maxDiversity = 0.9, unrest.growth = TRUE)
+    }
+    s.sota$total
+    # Si no planteamos un analisis recursivo no guardamos nada en reanalizar
+    if (recursivo == FALSE) {
+        reanalizar = c()
+        clusters_test = names(table(s.sota$clust))
+    } else {
+        reanalizar = names(table(s.sota$clust)[!table(s.sota$clust) < escala])
+        # Solo nos quedamos con los clusters que tienen mas de 9 genes
+        clusters_test = names(table(s.sota$clust)[!table(s.sota$clust) <= 10])
+    }
+ 
+    salida <- list("clusters_test" = clusters_test, "reanalizar" = reanalizar, "sota" = s.sota)
+    return(salida)
+}
+
+
+# Funcion para realizar todo el analisis con sota y generar plots de clusters no demasiado grandes
+global_SOTA <- function(Matriz_6, clusters_test = "inicio", reanalizar = "inicio", s.sota = 0, escala, clu_comp = "", fin="", nodos = c(), record_silueta = "Silueta", recursivo = TRUE, go = TRUE, kegg = TRUE, semData="", dir1=dir1) {
+  if(clu_comp != "") {
+    # Si en algun momento hay que acelerar el proceso esto hay q moverlo
+    # dir.create(file.path(paste(dir, "/salida", fin, sep="")), showWarnings = FALSE)
+    #
+    # salida = paste(dir1, "/salida", fin, "/", clu_comp, sep = "")
+    # saveRDS(s.sota, salida)
+  }
+  for(clu in clusters_test) {
+    # Si ya no necesitamos reanalizar mas, mostramos el cluster generado en un plot y buscamos asociaciones
+    if (!(clu %in% reanalizar)) {
+      pos = s.sota$clust == clu
+      DatosFilt = Matriz_6[pos,]
+      valor_silueta = record_silueta[as.numeric(clu)]
+      plotear(DatosFilt, clu, clu_comp, go=go, valor_silueta=valor_silueta, kegg=kegg, fin=fin, semData=semData)
+      nodos = append(nodos, paste(as.character(clu_comp), ".", as.character(clu), sep = ""))
+    }
+    ## Vamos a dividir los clusters mas grandes
+    else {
+      # Si ya tenemos un objeto sota filtramos por el cluster de interes
+      if(class(s.sota) == "sota") {
+        # Primero guardamos la matriz que concierne al cluster de interes
+        pos = s.sota$clust == clu
+        table(pos)
+        Matriz_filtr = Matriz_6[pos,]
+        
+      }
+      # Si no hay objeto sota es que estamos en la primera iteracion y no se ha generado todavia, por lo que interesa toda
+      # la matriz
+      else {
+        Matriz_filtr = Matriz_6
+      }
+      # Si vamos a mantener una proporcionalidad, no podremos dividir por mas clusters cuando el numero de genes sea inferior
+      # a el total de genes analizados dividido por las 25 divisiones
+      ciclos = round(nrow(Matriz_filtr)/escala, digits = 0)
+      lista_sota = SOTA(Matriz_filtr, ciclos, escala, recursivo=recursivo)
+      
+      # Analizamos la robustez de los clustes generados con silhouette
+      distance = dist(Matriz_filtr, method = "euclidean")
+      clusters_int = as.integer(lista_sota[["sota"]]$clust)
+      names(clusters_int) = rownames(Matriz_filtr)
+      silueta = silhouette(x=clusters_int, dist=distance)
+      resumen = summary(silueta)
+      silueta_clust = resumen$clus.avg.widths
+      # Les ponemos a los valores de disimilitud media el valor del cluster del que provienen como prefijo
+      record_silueta1 = paste(record_silueta, round(silueta_clust, 2), sep = "_")
+      
+      # Con esto se hace el seguimiento del origen de cada cluster
+      if (clu_comp != "") {
+        clu_comp2 = paste(as.character(clu_comp), ".", clu, sep = "")
+      }
+      else {
+        clu_comp2 = 0
+      }
+      nodos = global_SOTA(Matriz_filtr, lista_sota[["clusters_test"]], lista_sota[["reanalizar"]], lista_sota[["sota"]], 
+                          escala = escala, clu_comp = clu_comp2, fin=fin, nodos=nodos, record_silueta = record_silueta1,
+                          recursivo=recursivo, go=go, kegg=kegg, semData=semData, dir1=dir1)
+    }
+  }
+  return(nodos)
+}
+
+# # # PAra pruebas
+# # # Al llamar global_SOTA
+# clusters_test = "inicio"
+# reanalizar = "inicio"
+# s.sota = 0
+# clu_comp = ""
+# nodos=c()
+# 
+# #En cada iteracion
+# Matriz_6 = Matriz_filtr
+# clusters_test = lista_sota[["clusters_test"]]
+# reanalizar = lista_sota[["reanalizar"]]
+# s.sota = lista_sota[["sota"]]
+# clu_comp = clu_comp2
+
+# # Funcion para generar silueta y lanzar las funciones para generar plot y guardar GOs
+# selecClusters <- function(div_clusters1, dir1, grupos1, go=TRUE, fin) {
+#   for ( i in 1:length(div_clusters1)) {
+#     s.sota = readRDS(paste(dir1, "/salida",fin, "_", div_clusters1[i], "div", "/0", sep=""))
+#     Matriz_filtr = s.sota$data
+#     # Analizamos la robustez de los clustes generados con silhouette
+#     distance = dist(Matriz_filtr, method = "euclidean")
+#     clusters_int = as.integer(s.sota$clust)
+#     names(clusters_int) = rownames(Matriz_filtr)
+#     silueta = silhouette(x=clusters_int, dist=distance)
+#     resumen = summary(silueta)
+#     silueta_clust = resumen$clus.avg.widths
+#     silueta_clust = round(silueta_clust, 2)
+#     for (clu in grupos1[,i]) {
+#       if (!is.na(clu)) {
+#         pos = s.sota$clust == clu
+#         DatosFilt = Matriz_filtr[pos,]
+#         valor_silueta = silueta_clust[as.numeric(clu)]
+#         clu_comp = paste(div_clusters1[i], "div", "_0",sep="")
+#         plotear(DatosFilt, clu, clu_comp, go=go, valor_silueta=valor_silueta, dir1=dir1, fin=fin)
+#       }
+#     }
+#     
+#   }
+# }
+```
+
+# Reanalisis de clusters
+
+```{r echo=FALSE}
+################################################# Programa  #####################################################
+options(width = 100)
+# # levadura
+# diez = c(2,4,6,8,10,11)
+# quince = c(8,13,14,11,9,10)
+# veinte = c(14,15,NA,NA,NA,NA)
+# treinta = c(30,31,16,17,NA,NA)
+# 
+dir1 = "/media/julen/TOSHIBA_EXT/datos/paper/levadura"
+setwd(dir1)
+fin = "_levadura"
+fich_salida = "Selección_clusters_levadura.pdf"
+
+# Han actualizado el paquete de mgoSim
+semDataBP <- godata('org.Sc.sgd.db', ont="BP")
+semDataCC <- godata('org.Sc.sgd.db', ont="CC")
+semData = list(semDataBP, semDataCC)
+
+# Seleccion de la subdivision (10 si es el caso en el que buscamos 10 clusters anteriormente)
+div_clusters = c(10)
+# Desntro de esas subdivision seleccion de los clusters
+d1 = c(10,11)
+
+
+# Seleccion de la escala 
+# escala = 2:4
+esc=2
+# Si queremos que el arbol sea recursivo, reursivo=TRUE
+recursivo=FALSE
+# Si queremos busqueda de GO
+busqueda_go = TRUE
+# Si queremos busqueda de KEGG 
+busqueda_kegg = FALSE
+
+
+
+# Esta parte para redividir clusters
+# selecClusters <- function(div_clusters1, dir1, grupos1, go=TRUE, fin) {
+for ( i in 1:length(div_clusters)) {
+  s.sota = readRDS(paste(dir1, "/salida",fin, "_", div_clusters[i], "div", "/0", sep=""))
+  Matriz_filtr = s.sota$data
+  
+  for (clu in c(d1)) {
+    print(paste("######### Division del cluster ",clu," #############"), sep="")
+    pos = s.sota$clust == clu
+    Matriz_filtr1 = Matriz_filtr[pos,]
+    # for (esc in escala) {
+      print(paste("############ Generando ", esc, " + 1 clusters #############"))
+      div = nrow(Matriz_filtr1) / esc
+      global_SOTA(Matriz_filtr1, escala = div, fin=fin, recursivo=recursivo, go=busqueda_go, kegg=busqueda_kegg, semData=semData, dir1=dir1)
+    # }
+    
+  }
+  
+}
+
+```
